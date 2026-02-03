@@ -1,0 +1,31 @@
+# Core Framework
+fastapi
+uvicorn
+sqlalchemy
+redis
+rq
+requests
+pydantic
+pydantic-settings
+
+# AI/ML
+torch
+torchvision
+open-clip-torch
+pillow
+
+# LLM Providers
+ollama
+openai  # Used for OpenRouter (OpenAI-compatible API)
+
+# TTS
+kokoro>=0.9.4
+soundfile
+
+# Utilities
+python-dotenv
+tqdm
+
+# Optional (for Phase 2+)
+# aiohttp
+# pytest

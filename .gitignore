@@ -1,0 +1,50 @@
+# Environment
+.env
+venv/
+env/
+ENV/
+.venv/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Project-specific
+temp/
+cache/
+output/
+models/
+
+# Generated videos
+*.mp4
+*.wav
+*.avi
+*.mov
+
+# Credits files
+*_credits.txt
+*_credits.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Test files
+test_*.mp4
+test_*.wav
