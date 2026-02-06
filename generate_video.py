@@ -24,16 +24,18 @@ from subtitle_generator import SubtitleGenerator
 
 def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                    orientation: str = 'landscape',
-                   temp_dir: Path = None, keep_temp: bool = False) -> Path:
-    """Generate video from text prompt.
+                   temp_dir: Path = None, keep_temp: bool = False,
+                   script_text: str = None) -> Path:
+    """Generate video from text prompt or script.
 
     Args:
-        prompt: Topic/description for video
+        prompt: Topic/description for video (used if script_text is None)
         duration_minutes: Target duration in minutes
         output_path: Where to save final video
         orientation: Video orientation ('landscape', 'portrait', 'square', or 'any')
         temp_dir: Temporary working directory
         keep_temp: Keep temporary files after completion
+        script_text: Optional user-provided narration script (bypasses LLM narration generation)
 
     Returns:
         Path to generated video file
@@ -50,7 +52,11 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n{'='*70}")
-    print(f"GENERATING VIDEO: {prompt}")
+    if script_text:
+        print(f"GENERATING VIDEO FROM SCRIPT")
+        print(f"Script length: {len(script_text.split())} words")
+    else:
+        print(f"GENERATING VIDEO: {prompt}")
     print(f"Duration: {duration_minutes} minutes")
     print(f"Orientation: {orientation}")
     print(f"Output: {output_path}")
@@ -136,9 +142,16 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         loop_mode = os.getenv("ENABLE_VIDEO_LOOP", "false").lower() == "true"
 
-        plan = planner.generate_continuous(prompt, duration_minutes,
-                                           words_per_second=words_per_second,
-                                           loop_mode=loop_mode)
+        # Branch based on script vs prompt
+        if script_text:
+            # User provided script - use as-is, generate only visual clips
+            print("  Using user-provided script (no LLM narration modification)")
+            plan = planner.generate_clips_from_script(script_text, duration_minutes)
+        else:
+            # Generate both narration and clips from prompt
+            plan = planner.generate_continuous(prompt, duration_minutes,
+                                               words_per_second=words_per_second,
+                                               loop_mode=loop_mode)
 
         # Print plan preview with Unicode-safe encoding for Windows
         try:
@@ -524,18 +537,26 @@ def main():
         description="Generate YouTube videos from text prompts using local AI"
     )
 
-    parser.add_argument(
+    # Create mutually exclusive group for prompt vs script
+    input_group = parser.add_mutually_exclusive_group(required=True)
+
+    input_group.add_argument(
         "--prompt",
         type=str,
-        required=True,
-        help="Topic or description for the video"
+        help="Topic or description for the video (LLM generates narration)"
+    )
+
+    input_group.add_argument(
+        "--script",
+        type=str,
+        help="Narration script: path to .txt file OR inline text (used as-is, no LLM modification)"
     )
 
     parser.add_argument(
         "--duration",
         type=float,
-        required=True,
-        help="Video duration in minutes (e.g., 1.0 for 1 minute, 2.5 for 2.5 minutes)"
+        required=False,
+        help="Video duration in minutes (required for --prompt, optional for --script - auto-calculated from word count)"
     )
 
     parser.add_argument(
@@ -571,6 +592,53 @@ def main():
     # Load environment variables
     load_dotenv()
 
+    # Handle script vs prompt input
+    script_text = None
+    duration_minutes = args.duration
+
+    if args.script:
+        # Load script from file or inline text
+        from script_loader import load_script, estimate_duration_from_script
+
+        try:
+            script_input = load_script(args.script)
+            script_text = script_input.text
+
+            if script_input.source == 'file':
+                print(f"Loaded script from file: {script_input.file_path}")
+            else:
+                print(f"Using inline script ({len(script_text.split())} words)")
+
+        except (FileNotFoundError, ValueError) as e:
+            print(f"Error loading script: {e}")
+            return 1
+
+        # Calculate words_per_second for duration estimation
+        current_tts_engine = os.getenv("TTS_ENGINE", "kokoro").lower()
+        wps_override = os.getenv("WORDS_PER_SECOND", "").strip()
+        if wps_override:
+            words_per_second = float(wps_override)
+        elif current_tts_engine == "kokoro":
+            kokoro_speed = float(os.getenv("KOKORO_SPEED", "1.0"))
+            words_per_second = 3.0 * kokoro_speed
+        elif current_tts_engine == "chatterbox":
+            words_per_second = 2.5
+        else:
+            words_per_second = 3.0
+
+        # Estimate duration if not provided
+        if duration_minutes is None:
+            duration_minutes = estimate_duration_from_script(script_text, words_per_second)
+            print(f"Estimated duration: {duration_minutes:.2f} minutes ({len(script_text.split())} words at {words_per_second:.1f} wps)")
+        else:
+            print(f"Using user-specified duration: {duration_minutes} minutes")
+
+    else:
+        # Using --prompt, duration is required
+        if duration_minutes is None:
+            print("Error: --duration is required when using --prompt")
+            return 1
+
     # Validate environment
     required_vars = ["PEXELS_API_KEY"]
 
@@ -597,11 +665,12 @@ def main():
     try:
         generate_video(
             prompt=args.prompt,
-            duration_minutes=args.duration,
+            duration_minutes=duration_minutes,
             output_path=Path(args.output),
             orientation=orientation,
             temp_dir=Path(args.temp_dir) if args.temp_dir else None,
-            keep_temp=args.keep_temp
+            keep_temp=args.keep_temp,
+            script_text=script_text
         )
         return 0
 
