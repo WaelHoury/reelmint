@@ -1,0 +1,54 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+ENV
+env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Output and temp files
+output/
+temp/
+*.mp4
+*.wav
+*.mp3
+*_credits.txt
+*_credits.json
+
+# Cache (will be mounted as volume)
+cache/
+
+# Models (will be mounted as volume)
+models/
+
+# Logs
+*.log
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+!README.md
+
+# Tests
+tests/
+test_*.py
+
+# Local env file (use env_file in compose)
+.env.local

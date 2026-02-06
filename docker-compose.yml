@@ -1,0 +1,89 @@
+# AI Video Maker - Docker Compose Configuration
+# Usage: docker-compose up -d
+
+version: '3.8'
+
+services:
+  # Redis - Session storage and job queue
+  redis:
+    image: redis:7-alpine
+    container_name: aivideo-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Server - FastAPI application
+  api:
+    build: .
+    container_name: aivideo-api
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      # Use host.docker.internal to access Ollama on Windows host
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - TEMP_DIR=/app/temp
+      - CACHE_DIR=/app/cache
+      - OUTPUT_DIR=/app/output
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./output:/app/output
+      - ./music:/app/music
+      - ./cache:/app/cache
+      - ./models:/app/models
+    restart: unless-stopped
+
+  # RQ Worker - Background job processor
+  worker:
+    build: .
+    container_name: aivideo-worker
+    command: python run_worker.py
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - TEMP_DIR=/app/temp
+      - CACHE_DIR=/app/cache
+      - OUTPUT_DIR=/app/output
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./output:/app/output
+      - ./music:/app/music
+      - ./cache:/app/cache
+      - ./models:/app/models
+    restart: unless-stopped
+
+  # Frontend - Vue 3 + Element Plus
+  frontend:
+    image: node:20-alpine
+    container_name: aivideo-frontend
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "3000:3000"
+    environment:
+      - API_URL=http://api:8000
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      - api
+
+volumes:
+  redis_data:
+    name: aivideo-redis-data
+  frontend_node_modules:
+    name: aivideo-frontend-modules
