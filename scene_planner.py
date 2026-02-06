@@ -6,6 +6,8 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 import ollama
 
+from token_counter import TokenCounter
+
 
 class Scene(BaseModel):
     """Represents a single scene in the video with multiple clip support."""
@@ -99,105 +101,79 @@ class VideoPlan(BaseModel):
 class ScenePlanner:
     """Generates structured scene plans using LLM."""
 
-    # Style-specific tone/voice instructions injected into the system prompt
+    # Style-specific tone/voice instructions - kept concise to avoid LLM confusion
     NARRATION_STYLES = {
         'viral': {
-            'voice': (
-                'You are an elite YouTube shorts scriptwriter. '
-                'You write hook-driven micro-stories that feel true, specific, and addictive.'
-            ),
-            'tone': (
-                'Like telling a fascinating story to a friend: confident, playful, punchy. '
-                'No lecturing. No “in this video” fluff.'
-            ),
+            'voice': 'a YouTube shorts scriptwriter who hooks viewers with specific, fascinating facts',
+            'tone': 'telling a story to a friend — confident, punchy, no fluff',
             'rules': (
-                '- OPEN HARD (first 1–2 lines): a shocking fact, bold claim, or weird question. No warm-up.\n'
-                '- STRUCTURE: Hook → Setup (context fast) → Twist (unexpected) → Reveal (the “aha”) → Payoff (clean final line).\n'
-                '- PACING: Every 1–2 sentences must add NEW information. No stalling, no rephrasing.\n'
-                '- RHYTHM: Mix ultra-short punches (3–6 words) with longer sentences. Vary sentence starts.\n'
-                '- CURIOSITY BRIDGES (use sparingly, 1–3 max): “But here’s the weird part…”, “Now it gets wilder…”, “Here’s the catch…”\n'
-                '- CONVERSATIONAL: Use contractions. Speak to “you”. Sound like a human, not a narrator.\n'
-                '- SPECIFICITY > HYPE: Prefer concrete details, comparisons, and examples over vague words like “crazy/insane.”\n'
-                '- VISUAL WRITING: Describe what you’d *see* in simple, vivid terms (actions, contrasts, tiny details).\n'
-                '- KEEP IT TIGHT: Remove filler phrases (“imagine this”, “let’s talk about”). No disclaimers.\n'
-                '- END STRONG: A satisfying callback, perspective shift, or crisp thought-provoking line. No generic “follow for more.”'
+                '- Hook first: open with a shocking fact or bold claim, no warm-up\n'
+                '- Every sentence = new info (never repeat or rephrase)\n'
+                '- Mix short punches with longer sentences, vary your rhythm\n'
+                '- End with a memorable line that sticks'
             ),
         },
 
         'informative': {
-            'voice': 'an expert educator who explains complex topics clearly and engagingly',
-            'tone': 'a knowledgeable teacher making a topic accessible — clear, structured, and insightful',
+            'voice': 'an expert teacher who makes complex topics simple',
+            'tone': 'clear, structured, insightful — like a great explainer video',
             'rules': (
-                '- Open with a clear, intriguing statement of what the viewer will learn\n'
-                '- Present facts and explanations in a logical order, building understanding step by step\n'
-                '- Use analogies and relatable comparisons to make complex ideas simple\n'
-                '- Include specific numbers, dates, or data points to add credibility\n'
-                '- End with a key takeaway or surprising implication the viewer can remember'
+                '- Open with what the viewer will learn\n'
+                '- Build understanding step by step in logical order\n'
+                '- Use analogies to make complex ideas click\n'
+                '- End with a key takeaway they can remember'
             ),
         },
+
         'funny': {
-            'voice': 'a stand-up comedian who makes every topic hilarious with sharp wit and timing',
-            'tone': 'a funny friend roasting the topic — sarcastic, exaggerated, absurd, but still accurate',
+            'voice': 'a comedian who makes every topic hilarious',
+            'tone': 'a funny friend roasting the topic — sarcastic but accurate',
             'rules': (
-                '- Open with a joke, absurd observation, or exaggerated take on the topic\n'
-                '- Use comedic timing: set up expectations, then subvert them with a punchline\n'
-                '- Exaggerate for effect but keep the core facts accurate\n'
-                '- Include self-aware humor, rhetorical questions, and sarcastic commentary\n'
-                '- End with a big punchline or a funny callback to the opening joke'
+                '- Open with a joke or absurd observation\n'
+                '- Set up expectations, then subvert with a punchline\n'
+                '- Exaggerate for effect, keep facts accurate\n'
+                '- End with a big punchline or callback'
             ),
         },
+
         'storytelling': {
-            'voice': 'a master storyteller who turns any topic into a captivating narrative',
-            'tone': 'someone telling a campfire story — vivid, emotional, with characters and drama',
+            'voice': 'a master storyteller who turns any topic into a narrative',
+            'tone': 'a campfire story — vivid, emotional, with drama',
             'rules': (
-                '- Open by setting a scene or introducing a character the viewer can relate to\n'
-                '- Build narrative tension — present a problem, conflict, or mystery\n'
-                '- Use vivid sensory details: what things look, sound, feel like\n'
-                '- Include emotional beats — moments of wonder, surprise, or reflection\n'
-                '- End with a resolution that ties the story together meaningfully'
+                '- Open by setting a scene or introducing a character\n'
+                '- Build tension with a problem or mystery\n'
+                '- Use vivid sensory details — what things look, sound, feel like\n'
+                '- End with a satisfying resolution'
             ),
         },
+
         'motivational': {
-            'voice': 'an inspiring speaker who makes viewers feel empowered and driven to act',
-            'tone': 'a coach giving a pep talk — energetic, direct, and uplifting',
+            'voice': 'an inspiring coach who empowers viewers to act',
+            'tone': 'a pep talk — energetic, direct, uplifting',
             'rules': (
-                '- Open with a bold, empowering statement or challenge to the viewer\n'
-                '- Acknowledge the struggle or doubt the viewer might feel\n'
-                '- Use "you" frequently — make it personal and direct\n'
-                '- Build momentum with increasingly powerful statements\n'
-                '- End with a clear call to action or an unforgettable closing line'
+                '- Open with a bold statement or challenge\n'
+                '- Acknowledge the struggle, then build momentum\n'
+                '- Speak directly to "you" — make it personal\n'
+                '- End with a clear call to action'
             ),
         },
+
         'creative': {
-            'voice': (
-                'a chill, curious overthinker who goes down rabbit holes and somehow makes them make sense. '
-                'You talk like someone having a late-night epiphany — not a scientist, not a debater.'
-            ),
-            'tone': (
-                'Like a friend on the couch at 2 AM who just had a wild thought and is NOW explaining it to you. '
-                'Relaxed, genuine, mind-wandering but always landing on something that clicks. '
-                'Think shower thoughts that accidentally become philosophy.'
-            ),
+            'voice': 'a curious overthinker having a late-night epiphany',
+            'tone': 'a friend at 2 AM who just had a wild thought — relaxed, genuine, mind-wandering',
             'rules': (
-                '- OPEN WITH THE QUESTION: State the premise casually so the viewer knows what we\'re talking about.\n'
-                '  Example: "Okay but like… is a duck seafood? Think about it for a second."\n'
-                '- NEVER correct, debunk, or "well actually" the premise. You genuinely believe it. Run with it.\n'
-                '- THINK OUT LOUD: Let the narration feel like a train of thought, not a prepared speech.\n'
-                '  Use natural transitions like "and like…", "okay but then…", "which means…", "right?"\n'
-                '- USE SIMPLE, EVERYDAY COMPARISONS — not scientific terminology.\n'
-                '  Good: "A duck literally lives in water. A shrimp lives in water. We eat both. What\'s the difference?"\n'
-                '  Bad: "Taxonomically speaking, the Anatidae family shares aquatic habitats with crustaceans."\n'
-                '- ESCALATE THE RABBIT HOLE: Start with the obvious thought, then keep pulling the thread further.\n'
-                '  Each point should feel like "wait… and ALSO…" — building momentum.\n'
-                '- KEEP IT REAL: Every argument must be based on true, checkable facts. Don\'t make stuff up.\n'
-                '  But present facts casually, not like a textbook.\n'
-                '- NO jargon, no academic language, no "furthermore" or "moreover" or "it\'s worth noting".\n'
-                '  Write how people actually talk.\n'
-                '- END with the thought that hits hardest — the one that makes the viewer go "…huh. okay yeah maybe."\n'
-                '  Or leave it as an open question that sticks in their head.'
+                '- Open with the premise casually ("Okay but like... is X really Y?")\n'
+                '- Run with the idea — don\'t debunk it, explore it\n'
+                '- Think out loud: "and like...", "okay but then...", "which means..."\n'
+                '- Use everyday comparisons, not jargon\n'
+                '- End with the thought that hits hardest'
             ),
         },
     }
+
+    # Concise keyword rules - used in multiple prompts
+    KEYWORD_RULES = """KEYWORDS: Use only filmable nouns (things you can point a camera at).
+Good: bee, flower, jar, ocean, clock. Bad: process, energy, concept, nutrients, enzymes."""
 
     @classmethod
     def _build_continuous_prompt(cls, style: str = 'viral') -> str:
@@ -211,200 +187,58 @@ class ScenePlanner:
         """
         s = cls.NARRATION_STYLES.get(style, cls.NARRATION_STYLES['viral'])
 
-        # Creative style needs a different relationship to the user's prompt:
-        # treat it as a thesis to defend, not a question to answer.
+        # Creative style: run with the idea. Other styles: answer the question.
         if style == 'creative':
             prompt_rule = (
-                "MOST IMPORTANT RULE — RUN WITH THE USER'S IDEA:\n"
-                "- The user's prompt is your shower thought. You're vibing with it, not fact-checking it.\n"
-                "- Do NOT answer, correct, or debunk the premise. You genuinely think it might be true.\n"
-                "- If the user asks 'Is X a Y?' — your reaction is 'honestly… kinda yeah?' and then you explain why.\n"
-                "- Build the case using everyday logic, common sense comparisons, and real-world examples.\n"
-                "- Stay on the user's specific topic — don't wander off to unrelated stuff.\n"
-                "- If the user mentions specific angles or arguments, riff on those and go deeper."
+                "FOLLOW THE PROMPT: Run with the user's idea. Don't debunk or correct it — "
+                "explore it with everyday logic. Stay on their specific topic."
             )
         else:
             prompt_rule = (
-                "MOST IMPORTANT RULE — FOLLOW THE USER'S PROMPT:\n"
-                "- The user's prompt is your BLUEPRINT. Read it carefully.\n"
-                "- If the user asks a specific question, your narration MUST answer that exact question.\n"
-                "- If the user lists specific angles, points, or sub-topics, you MUST cover ALL of them in order.\n"
-                "- Do NOT go off on tangents or cover generic background that the user didn't ask for.\n"
-                "- Every sentence must serve the user's stated goal — if a sentence doesn't relate to what they asked, DELETE IT.\n"
-                "- If the user provides a specific argument or thesis, BUILD on it — don't just restate the obvious."
+                "FOLLOW THE PROMPT: Answer exactly what the user asks. "
+                "Cover their specific points in order. Don't go off on tangents."
             )
 
-        return f"""You are {s['voice']}. Generate a CONTINUOUS narration script with a separate visual clip list.
+        return f"""You are {s['voice']}. Your narration sounds like {s['tone']}.
 
-The narration should sound like {s['tone']}.
-
-Output ONLY valid JSON in this exact format:
-{{
-  "narration": "Your full continuous narration script here.",
-  "clips": [
-    {{"keywords": ["keyword1", "keyword2", "keyword3"], "visual_description": "What the viewer sees during this 3-second segment"}},
-    {{"keywords": ["keyword1", "keyword2", "keyword3"], "visual_description": "Next visual segment"}}
-  ]
-}}
+PRIORITY RULES (most important):
+1. Stay on topic — every sentence must relate to the user's prompt
+2. No repetition — each sentence adds NEW information
+3. Natural speech — write like talking to a friend, not a textbook
 
 {prompt_rule}
 
-NARRATION RULES:
+STYLE:
 {s['rules']}
-- Target ~3 words per second (60-second video = ~180 words)
-- Do NOT use filler phrases or overly formal language
-- NEVER repeat a sentence or idea you already stated — every sentence must add NEW information or a NEW angle
-- Vary your sentence structure — do NOT start multiple sentences the same way
-- Every sentence must be grammatically complete and make logical sense
-- Do NOT write sentence fragments or trailing thoughts that go nowhere
 
-CLIPS RULES:
-- Each clip represents ~3 seconds of video footage
-- Clips are PURELY VISUAL - they show relevant imagery while narration plays
-- The number of clips should match the video duration (e.g., 60s video = ~20 clips)
-- Clip keywords must be CONCRETE, PHYSICAL NOUNS that you can film
-- Include the main topic noun in most clips
-- Clip visual variety: alternate between wide shots, close-ups, different angles
-- Clips do NOT need to match narration word-for-word, just stay on topic
+OUTPUT FORMAT (JSON only):
+{{"narration": "Full script here.", "clips": [{{"keywords": ["noun1", "noun2"], "visual_description": "What viewer sees"}}]}}
 
-KEYWORD REQUIREMENTS (CRITICAL):
-1. Keywords MUST be concrete, physical NOUNS
-2. Test each keyword: "Can I film a video of just this keyword?" If no, it's BAD
-3. NEVER use abstract concepts: "nutrients", "process", "energy", "system"
-4. NEVER use scientific terms: "enzymes", "photosynthesis", "molecules"
-5. Use words a photographer would use to label footage
+NARRATION: ~3 words/second. No filler phrases. Vary sentence structure.
 
-EXAMPLE for "How bees make honey" (30 seconds):
+CLIPS: One per ~3 seconds. Alternate wide/close-up/detail shots.
+{cls.KEYWORD_RULES}
 
-{{
-  "narration": "Did you know a single bee only makes one twelfth of a teaspoon of honey in its entire life? One twelfth. That tiny drop takes visiting thousands of flowers, one by one. They suck up the nectar, store it in a special honey stomach, and fly it all the way back to the hive. But here's where it gets wild. They actually pass the nectar mouth to mouth to other bees, who chew it up and spread it across the honeycomb. Then they just wait. The water slowly evaporates, and what's left is that thick golden honey you put on your toast. All that work, from thousands of bees, just so you can have one jar.",
-  "clips": [
-    {{"keywords": ["bee", "flower", "garden", "flying"], "visual_description": "Bee flying toward colorful flowers in a garden"}},
-    {{"keywords": ["bee", "flower", "pollen", "closeup"], "visual_description": "Close-up of bee landing on a flower"}},
-    {{"keywords": ["bee", "nectar", "tongue", "flower"], "visual_description": "Bee collecting nectar from flower petals"}},
-    {{"keywords": ["bee", "flying", "sky", "wings"], "visual_description": "Bee in flight carrying pollen on its legs"}},
-    {{"keywords": ["beehive", "bees", "entrance", "wooden"], "visual_description": "Bees entering and exiting a wooden beehive"}},
-    {{"keywords": ["honeycomb", "bees", "wax", "hive"], "visual_description": "Bees working on honeycomb cells inside hive"}},
-    {{"keywords": ["honeycomb", "honey", "golden", "dripping"], "visual_description": "Golden honey dripping from honeycomb"}},
-    {{"keywords": ["honey", "jar", "spoon", "golden"], "visual_description": "Close-up of golden honey in a glass jar"}},
-    {{"keywords": ["bee", "flower", "field", "meadow"], "visual_description": "Single bee among wildflowers in a meadow"}},
-    {{"keywords": ["honey", "toast", "breakfast", "drizzle"], "visual_description": "Honey being drizzled on food"}}
-  ]
-}}
+Output ONLY valid JSON, no markdown or explanation."""
 
-Do NOT include markdown code blocks, explanations, or any text outside the JSON."""
+    SYSTEM_PROMPT = """You write video narration scripts.
 
-    SYSTEM_PROMPT = """You are a video script writer. Generate a structured scene plan for a fast-paced, engaging video with FULL NARRATION SCRIPTS.
+PRIORITY RULES (most important):
+1. Stay on topic — every sentence must relate to the user's prompt
+2. No repetition — each sentence adds NEW information
+3. Natural speech — write like talking to a friend
 
-CRITICAL: The "narration" field must contain the COMPLETE SCRIPT that will be spoken aloud, NOT just a topic description.
+OUTPUT FORMAT (JSON only):
+{"scenes": [{"narration": "Full script spoken aloud (8-25 words)", "keywords": ["noun1", "noun2", "noun3"], "target_seconds": 3.0, "visual_description": "What viewer sees"}]}
 
-Output ONLY valid JSON in this exact format:
-{
-  "scenes": [
-    {
-      "narration": "Complete sentences that will be spoken aloud. For a 3-second scene, write 8-10 words of concise, punchy narration.",
-      "keywords": ["keyword1", "keyword2", "keyword3"],
-      "target_seconds": 3.0,
-      "visual_description": "Detailed description of visuals needed (10-300 chars)"
-    }
-  ]
-}
+SCENES: 10-40 scenes, 3-6 seconds each. ~3 words per second.
 
-Requirements:
-- Create 10-40 scenes depending on total duration (~3 seconds per scene for fast, TikTok-style pacing)
-- Each scene narration: FULL SCRIPT with 8-25 words (concise and punchy!)
-- Narration should be clear, direct, and match the target duration
-- Target word count: ~3 words per second (3s scene = 9 words, 5s scene = 15 words)
-- Each scene keywords: 3-5 CONCRETE, VISUAL NOUNS related to main topic
-- Each scene duration: 3-6 seconds (fast pacing keeps viewers engaged)
-- Visual descriptions should be concrete and specific
+KEYWORDS: Use only filmable nouns — things you can point a camera at.
+- Good: bee, flower, jar, ocean, clock, hands, sunset
+- Bad: process, energy, nutrients, enzymes, concept
+- Include main topic noun in most scenes (e.g., "bee" for bee videos)
 
-KEYWORD REQUIREMENTS (CRITICAL - FAILURE TO FOLLOW = BAD VIDEO QUALITY):
-1. Keywords MUST be concrete, physical NOUNS that exist in real life
-2. MANDATORY: Include the main topic noun in EVERY scene (e.g., "honey", "bee", "ocean", "plant")
-3. Test each keyword: "Can I film a video of just this keyword?" If no, it's BAD
-4. NEVER use abstract concepts, processes, or scientific terms as keywords
-5. NEVER use adjectives, verbs, or adverbs as keywords
-
-FORBIDDEN KEYWORDS (NEVER USE THESE):
-- Abstract: "nutrients", "process", "energy", "health", "diet", "system", "cycle"
-- Scientific: "enzymes", "photosynthesis", "molecules", "chemicals", "reactions"
-- Verbs: "regurgitate", "condensing", "evaporating", "forming"
-- Adjectives: "important", "essential", "vital", "natural"
-
-REQUIRED KEYWORD PATTERN:
-Every scene MUST follow this pattern:
-- Keyword 1: Main topic noun (e.g., "bee", "honey", "ocean")
-- Keyword 2-4: Related physical objects you can see/film
-- Example: ["bee", "flower", "pollen", "wings"] ✓
-- Example: ["ocean", "waves", "beach", "sunset"] ✓
-
-NARRATION EXAMPLES (3-second scenes):
-
-Bad narration (too short): "Introduction to photosynthesis."
-Good narration (3s, ~9 words): "Plants convert sunlight into energy through photosynthesis using chlorophyll."
-
-Good narration (4s, ~12 words): "Bees collect nectar from flowers and carry it back to their hive."
-
-Good narration (5s, ~15 words): "The honey is stored in hexagonal wax cells that the bees build inside the hive."
-
-KEYWORD EXAMPLES - Learn from these:
-
-Topic: "How bees make honey"
-WRONG: ["nutrients", "antioxidants", "diet"] → Gets walnut/vitamin videos!
-CORRECT: ["honey", "jar", "honeycomb", "golden"] → Gets honey videos ✓
-
-WRONG: ["regurgitate", "enzymes", "process"] → Gets medical/lab videos!
-CORRECT: ["bee", "flower", "nectar", "pollen"] → Gets bee foraging ✓
-
-WRONG: ["storage", "cells", "structure"] → Gets random storage videos!
-CORRECT: ["honeycomb", "beeswax", "hive", "cells"] → Gets bee hive ✓
-
-Topic: "Water cycle"
-WRONG: ["evaporation", "condensation", "precipitation"] → Gets science diagrams!
-CORRECT: ["ocean", "waves", "sun", "water"] → Gets ocean footage ✓
-
-WRONG: ["atmosphere", "vapor", "cloud formation"] → Gets sky timelapses!
-CORRECT: ["clouds", "sky", "storm", "rain"] → Gets weather footage ✓
-
-Topic: "Photosynthesis"
-WRONG: ["chlorophyll", "glucose", "carbon dioxide"] → Gets lab/science videos!
-CORRECT: ["plant", "leaves", "sunlight", "green"] → Gets plant footage ✓
-
-REMEMBER: Use words that a photographer would use to label their video!
-
-MULTIPLE CLIPS PER SCENE (OPTIONAL - for scenes >8 seconds):
-- For longer scenes (>8 seconds), you can specify num_clips and clip_keywords
-- num_clips: Number of different clips to show (1-4)
-- clip_keywords: Array of keyword arrays, one for each clip
-- Each clip should show a different angle, moment, or aspect
-- Example for 12-second scene about "bees collecting nectar":
-  {
-    "narration": "Bees fly from flower to flower, collecting nectar with their long tongues and storing it in special honey stomach pouches.",
-    "keywords": ["bee", "flower", "nectar"],
-    "target_seconds": 12.0,
-    "visual_description": "Bees approaching, landing on, and flying away from colorful flowers",
-    "num_clips": 3,
-    "clip_keywords": [
-      ["bee", "flying", "approach", "flower"],
-      ["bee", "flower", "pollen", "closeup"],
-      ["bee", "flying", "wings", "departure"]
-    ]
-  }
-
-- If num_clips is omitted or 1, only use keywords field (single clip per scene)
-- Clip progression should tell a mini-story or show variety:
-  - Wide shot → Medium shot → Close-up
-  - Action start → Action middle → Action end
-  - Angle A → Angle B → Angle C
-
-- Set num_clips based on scene duration:
-  - 2-8 seconds: 1 clip (default)
-  - 8-12 seconds: 2 clips
-  - 12-20 seconds: 3 clips
-  - 20+ seconds: 4 clips
-
-Do NOT include markdown code blocks, explanations, or any text outside the JSON."""
+Output ONLY valid JSON, no markdown or explanation."""
 
     def __init__(self,
                  provider: Literal["ollama", "openrouter"] = "ollama",
@@ -426,6 +260,7 @@ Do NOT include markdown code blocks, explanations, or any text outside the JSON.
         self.base_url = base_url
         self.api_key = api_key
         self.narration_style = narration_style
+        self.token_counter = TokenCounter()
 
         if provider == "openrouter" and not api_key:
             raise ValueError("OpenRouter requires an API key (OPENROUTER_API_KEY)")
@@ -450,7 +285,8 @@ Do NOT include markdown code blocks, explanations, or any text outside the JSON.
         )
         return response['message']['content']
 
-    def _call_openrouter(self, messages: list, temperature: float = 0.7) -> str:
+    def _call_openrouter(self, messages: list, temperature: float = 0.7,
+                          stage: str = "unknown") -> str:
         """Call OpenRouter API and return the response content.
 
         OpenRouter uses an OpenAI-compatible API format.
@@ -458,6 +294,7 @@ Do NOT include markdown code blocks, explanations, or any text outside the JSON.
         Args:
             messages: List of message dicts with 'role' and 'content'
             temperature: Sampling temperature
+            stage: Description of the call stage for token tracking
 
         Returns:
             Response content string
@@ -478,22 +315,45 @@ Do NOT include markdown code blocks, explanations, or any text outside the JSON.
             presence_penalty=0.2,
         )
 
+        # Track token usage if available
+        if response.usage:
+            self.token_counter.track_usage(
+                prompt_tokens=response.usage.prompt_tokens,
+                completion_tokens=response.usage.completion_tokens,
+                model=self.model,
+                stage=stage
+            )
+
         return response.choices[0].message.content
 
-    def _call_llm(self, messages: list, temperature: float = 0.7) -> str:
+    def _call_llm(self, messages: list, temperature: float = 0.7,
+                   stage: str = "unknown") -> str:
         """Call the configured LLM provider.
 
         Args:
             messages: List of message dicts with 'role' and 'content'
             temperature: Sampling temperature
+            stage: Description of the call stage for token tracking
 
         Returns:
             Response content string
         """
         if self.provider == "openrouter":
-            return self._call_openrouter(messages, temperature)
+            return self._call_openrouter(messages, temperature, stage)
         else:
             return self._call_ollama(messages, temperature)
+
+    def get_token_report(self) -> str:
+        """Get formatted token usage report.
+
+        Returns:
+            Formatted string with token counts and cost estimate
+        """
+        return self.token_counter.format_report(self.model)
+
+    def reset_token_counter(self) -> None:
+        """Reset token counter for a new video generation."""
+        self.token_counter.reset()
 
     def generate(self, prompt: str, duration_minutes: float, max_retries: int = 3) -> List[Scene]:
         """Generate scene plan from prompt.
@@ -528,7 +388,7 @@ Output ONLY the JSON, no other text."""
                     {"role": "user", "content": user_prompt}
                 ]
 
-                content = self._call_llm(messages)
+                content = self._call_llm(messages, stage="scenes")
 
                 # Debug: Check if response is empty
                 if not content or len(content.strip()) == 0:
@@ -654,6 +514,279 @@ Each scene must have: narration, keywords (2-5 items), target_seconds (3-60), vi
 
         return "\n".join(lines)
 
+    def _generate_narration_only(self, prompt: str, duration_minutes: float,
+                                  words_per_second: float, loop_mode: bool,
+                                  max_retries: int = 3) -> str:
+        """Stage 1: Generate narration text only (no clips).
+
+        Smaller output = more reliable for long videos.
+
+        Args:
+            prompt: User's video topic/description
+            duration_minutes: Target duration in minutes
+            words_per_second: Target speaking rate
+            loop_mode: If True, narration loops back to start
+            max_retries: Maximum retry attempts
+
+        Returns:
+            Narration text string
+        """
+        word_count = int(duration_minutes * 60 * words_per_second)
+        s = self.NARRATION_STYLES.get(self.narration_style, self.NARRATION_STYLES['viral'])
+
+        loop_instruction = ""
+        if loop_mode:
+            loop_instruction = (
+                "\n\nLOOP MODE: End with a short bridge phrase that leads back to the opening "
+                "(e.g., 'So…', 'Which brings us back to…'). Do NOT conclude — end mid-thought."
+            )
+
+        system_prompt = f"""You are {s['voice']}.
+Write a narration script that sounds like {s['tone']}.
+
+RULES:
+{s['rules']}
+- Target ~{word_count} words (~3 words per second)
+- Do NOT use filler phrases or overly formal language
+- NEVER repeat ideas — every sentence must add NEW information
+- Every sentence must be grammatically complete
+
+Output ONLY the narration text. No JSON, no formatting, no quotes around it."""
+
+        user_prompt = f"""Write a {duration_minutes}-minute narration (~{word_count} words) about:
+{prompt}{loop_instruction}
+
+Output ONLY the narration text."""
+
+        print(f"  [Stage 1] Generating narration ({word_count} words)...")
+
+        for attempt in range(max_retries):
+            try:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ]
+
+                content = self._call_llm(messages, temperature=0.6, stage="narration")
+
+                if not content or len(content.strip()) == 0:
+                    print(f"    WARNING: Empty response (attempt {attempt + 1}/{max_retries})")
+                    continue
+
+                # Strip thinking tags and clean up
+                content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+
+                # Remove any accidental JSON wrapping or quotes
+                content = content.strip('"\'')
+                if content.startswith('{') and '"narration"' in content:
+                    # LLM accidentally output JSON, extract narration
+                    try:
+                        data = json.loads(content)
+                        content = data.get('narration', content)
+                    except:
+                        pass
+
+                words = content.split()
+                print(f"    Generated {len(words)} words")
+
+                if len(words) < word_count * 0.5:
+                    print(f"    WARNING: Too short, retrying...")
+                    continue
+
+                return content
+
+            except Exception as e:
+                print(f"    ERROR (attempt {attempt + 1}/{max_retries}): {e}")
+                continue
+
+        raise ValueError(f"Failed to generate narration after {max_retries} attempts")
+
+    def _generate_clips_for_narration(self, prompt: str, narration: str,
+                                       num_clips: int, max_retries: int = 3) -> List[dict]:
+        """Stage 2: Generate visual clips that match the narration.
+
+        Tracks used keywords and passes context between chunks to ensure
+        consistency, flow, and avoid video repetition.
+
+        Args:
+            prompt: Original user topic (for context)
+            narration: Full narration text from Stage 1
+            num_clips: Number of clips to generate
+            max_retries: Maximum retry attempts
+
+        Returns:
+            List of clip dicts with 'keywords' and 'visual_description'
+        """
+        # For very long narrations, split into chunks
+        words = narration.split()
+        chunk_size = 200  # ~60 seconds of narration
+        clips_per_chunk = max(5, num_clips // max(1, len(words) // chunk_size))
+
+        all_clips = []
+        used_keywords = set()  # Track keywords to avoid repetition
+        chunks = []
+
+        # Split narration into manageable chunks
+        if len(words) > chunk_size * 1.5:
+            # Split at sentence boundaries
+            sentences = re.split(r'(?<=[.!?])\s+', narration)
+            current_chunk = []
+            current_words = 0
+
+            for sent in sentences:
+                sent_words = len(sent.split())
+                if current_words + sent_words > chunk_size and current_chunk:
+                    chunks.append(' '.join(current_chunk))
+                    current_chunk = [sent]
+                    current_words = sent_words
+                else:
+                    current_chunk.append(sent)
+                    current_words += sent_words
+
+            if current_chunk:
+                chunks.append(' '.join(current_chunk))
+        else:
+            chunks = [narration]
+
+        print(f"  [Stage 2] Generating clips for {len(chunks)} chunk(s)...")
+
+        system_prompt = """Generate visual clips for a video narration.
+
+OUTPUT FORMAT (JSON array only):
+[
+  {"keywords": ["keyword1", "keyword2", "keyword3"], "visual_description": "What viewer sees"},
+  {"keywords": ["keyword1", "keyword2", "keyword3"], "visual_description": "Next visual"}
+]
+
+RULES:
+- Each clip = 4-10 seconds of video footage
+- Keywords must be CONCRETE, FILMABLE nouns (not abstract concepts)
+- Use words a photographer would use to label footage
+- Match clips to the narration content — show what's being discussed
+- VARY SHOTS: alternate wide → close-up → detail → action → wide
+- Do NOT repeat the same visual concept twice in a row
+- Each clip should feel like a natural visual progression
+
+WRONG keywords: ["process", "concept", "idea", "thing"]
+RIGHT keywords: ["brain", "neurons", "clock", "sunset"]
+
+Output ONLY the JSON array, nothing else."""
+
+        for chunk_idx, chunk in enumerate(chunks):
+            chunk_clips = clips_per_chunk if chunk_idx < len(chunks) - 1 else (num_clips - len(all_clips))
+            chunk_clips = max(3, chunk_clips)
+
+            # Build context from previous clips
+            context_info = ""
+            if all_clips:
+                # Show last 2 clips for continuity
+                last_clips = all_clips[-2:]
+                prev_visuals = [c['visual_description'] for c in last_clips]
+                context_info = f"\n\nPREVIOUS CLIPS (for continuity):\n"
+                for i, vis in enumerate(prev_visuals):
+                    context_info += f"  - {vis}\n"
+                context_info += "Continue the visual flow from these.\n"
+
+            # List keywords to avoid (limit to most recent to avoid huge lists)
+            avoid_info = ""
+            if used_keywords:
+                recent_keywords = list(used_keywords)[-30:]  # Last 30 keywords
+                avoid_info = f"\n\nAVOID THESE ALREADY-USED KEYWORDS (to prevent video repetition):\n{', '.join(recent_keywords)}\nUse DIFFERENT angles, subjects, or descriptors.\n"
+
+            user_prompt = f"""Topic: {prompt}
+
+Narration segment (chunk {chunk_idx + 1} of {len(chunks)}):
+"{chunk}"{context_info}{avoid_info}
+Generate {chunk_clips} visual clips that match this narration.
+Output ONLY the JSON array."""
+
+            for attempt in range(max_retries):
+                try:
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ]
+
+                    content = self._call_llm(messages, temperature=0.5, stage="clips")
+
+                    if not content:
+                        continue
+
+                    # Clean up response
+                    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+                    content = content.strip()
+
+                    # Extract JSON array from markdown code blocks
+                    if content.startswith('```'):
+                        match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
+                        if match:
+                            content = match.group(1)
+
+                    # Try to extract just the array portion (ignore garbage around it)
+                    array_match = re.search(r'\[[\s\S]*\]', content)
+                    if array_match:
+                        content = array_match.group(0)
+
+                    # JSON repair fixes
+                    content = re.sub(r',\s*([\]}])', r'\1', content)  # trailing commas
+                    content = re.sub(r'\.\.\.', '', content)  # ellipsis used by LLM
+                    content = re.sub(r'"\s*\n\s*"', '", "', content)  # broken strings across lines
+                    content = re.sub(r',\s*,', ',', content)  # double commas
+                    content = re.sub(r'\[\s*,', '[', content)  # leading comma in array
+                    content = re.sub(r',\s*\]', ']', content)  # trailing comma before ]
+
+                    try:
+                        clips_data = json.loads(content)
+                    except json.JSONDecodeError:
+                        # Fallback: extract clip objects with regex
+                        clips_data = []
+                        pattern = r'\{\s*"keywords"\s*:\s*\[(.*?)\]\s*,\s*"visual_description"\s*:\s*"([^"]+)"\s*\}'
+                        for clip_match in re.finditer(pattern, content):
+                            keywords = [k.strip(' "\'') for k in clip_match.group(1).split(',') if k.strip(' "\'')]
+                            clips_data.append({
+                                'keywords': keywords,
+                                'visual_description': clip_match.group(2)
+                            })
+                        if not clips_data:
+                            raise ValueError(f"Could not extract any clips from response")
+
+                    # Handle both array and object with clips key
+                    if isinstance(clips_data, dict) and 'clips' in clips_data:
+                        clips_data = clips_data['clips']
+
+                    if not isinstance(clips_data, list):
+                        raise ValueError("Expected array of clips")
+
+                    # Validate and add clips, track keywords
+                    for clip in clips_data:
+                        if 'keywords' in clip and 'visual_description' in clip:
+                            all_clips.append(clip)
+                            # Track keywords to avoid repetition
+                            for kw in clip['keywords']:
+                                used_keywords.add(kw.lower())
+
+                    print(f"    Chunk {chunk_idx + 1}: {len(clips_data)} clips")
+                    break
+
+                except Exception as e:
+                    print(f"    Chunk {chunk_idx + 1} ERROR (attempt {attempt + 1}): {e}")
+                    if 'content' in locals() and content:
+                        # Show a snippet of what we tried to parse
+                        snippet = content[:200].replace('\n', ' ')
+                        print(f"    Response snippet: {snippet}...")
+                    if attempt == max_retries - 1:
+                        # Generate fallback clips with varied keywords
+                        topic_words = [w.lower() for w in prompt.split()[:3] if len(w) > 3]
+                        angles = ['wide', 'closeup', 'detail', 'action', 'aerial']
+                        for i in range(chunk_clips):
+                            angle = angles[i % len(angles)]
+                            all_clips.append({
+                                'keywords': topic_words + [angle],
+                                'visual_description': f'{angle.title()} shot for segment {len(all_clips) + 1}'
+                            })
+
+        return all_clips[:num_clips]
+
     def generate_continuous(self, prompt: str, duration_minutes: float,
                             words_per_second: float = 3.0,
                             max_retries: int = 3,
@@ -661,7 +794,7 @@ Each scene must have: narration, keywords (2-5 items), target_seconds (3-60), vi
         """Generate continuous narration + visual clip list.
 
         Unlike generate(), this creates a single flowing narration with
-        independent visual clips that change every ~3 seconds.
+        independent visual clips that change every 3-6 seconds (longer for videos > 1 min).
 
         Args:
             prompt: User's video topic/description
@@ -675,9 +808,48 @@ Each scene must have: narration, keywords (2-5 items), target_seconds (3-60), vi
             VideoPlan with continuous narration and clip list
         """
         total_seconds = duration_minutes * 60
-        num_clips = max(3, int(total_seconds / 3))
+        # Longer videos use slower clip changes (4-10 seconds per clip)
+        clip_duration = 6 if duration_minutes > 1.0 else 3
+        num_clips = max(3, int(total_seconds / clip_duration))
         word_count = int(total_seconds * words_per_second)
 
+        print(f"  Using LLM: {self.provider} / {self.model}")
+        print(f"  Style: {self.narration_style}")
+        print(f"  Target: {word_count} words ({words_per_second:.1f} words/sec), {num_clips} clips")
+
+        # Use two-stage generation for videos > 1 minute (more reliable for long outputs)
+        if duration_minutes > 1.0:
+            print(f"  Using two-stage generation for long video...")
+            try:
+                # Stage 1: Generate narration only
+                narration = self._generate_narration_only(
+                    prompt, duration_minutes, words_per_second, loop_mode, max_retries
+                )
+
+                # Stage 2: Generate clips for the narration
+                clips_data = self._generate_clips_for_narration(
+                    prompt, narration, num_clips, max_retries
+                )
+
+                # Build VideoPlan
+                plan = VideoPlan(
+                    narration=narration,
+                    clips=[VisualClip(**clip) for clip in clips_data]
+                )
+
+                # Log summary
+                actual_words = len(narration.split())
+                print(f"\n  PLAN SUMMARY (two-stage):")
+                print(f"  Narration: {actual_words} words")
+                print(f"  Clips: {len(plan.clips)}")
+
+                return plan
+
+            except Exception as e:
+                print(f"  Two-stage failed: {e}")
+                print(f"  Falling back to single-stage generation...")
+
+        # Single-stage generation (for short videos or as fallback)
         loop_instruction = ""
         if loop_mode:
             loop_instruction = (
@@ -701,10 +873,6 @@ Output ONLY the JSON, no other text."""
 
         system_prompt = self._build_continuous_prompt(self.narration_style)
 
-        print(f"  Using LLM: {self.provider} / {self.model}")
-        print(f"  Style: {self.narration_style}")
-        print(f"  Target: {word_count} words ({words_per_second:.1f} words/sec), {num_clips} clips")
-
         for attempt in range(max_retries):
             try:
                 messages = [
@@ -712,7 +880,7 @@ Output ONLY the JSON, no other text."""
                     {"role": "user", "content": user_prompt}
                 ]
 
-                content = self._call_llm(messages, temperature=0.6)
+                content = self._call_llm(messages, temperature=0.6, stage="narration+clips")
 
                 if not content or len(content.strip()) == 0:
                     print(f"\n  WARNING: Empty response from {self.provider} (attempt {attempt + 1}/{max_retries})")

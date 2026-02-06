@@ -323,7 +323,11 @@ class TTSGenerator:
                 )
 
     def _generate_chatterbox(self, text: str, output_path: Path) -> Path:
-        """Generate audio using Chatterbox TTS.
+        """Generate audio using Chatterbox TTS with sentence batching.
+
+        Chatterbox produces corrupted output on long texts (500+ words).
+        This method splits text into sentence batches and concatenates
+        the audio to handle any length reliably.
 
         Outputs 24kHz audio via the standard ChatterboxTTS model (500M params).
 
@@ -335,25 +339,56 @@ class TTSGenerator:
             Path to raw audio file
         """
         import soundfile as sf
+        import numpy as np
+        import re
+        import os
 
         self._init_chatterbox()
         raw_output = output_path.parent / f"{output_path.stem}_raw.wav"
 
-        # Chatterbox ignores commas — replace with em-dashes to force pauses
-        text = text.replace(',', ' —')
+        # Split into sentences
+        sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+        sentences = [s for s in sentences if s.strip()]
 
-        generate_kwargs = dict(
-            text=text,
-            exaggeration=self.chatterbox_exaggeration,
-            cfg_weight=self.chatterbox_cfg,
-        )
-        if self.chatterbox_voice_ref:
-            generate_kwargs["audio_prompt_path"] = self.chatterbox_voice_ref
-        wav = self._chatterbox_model.generate(**generate_kwargs)
+        # Batch size (default 4 sentences per batch)
+        batch_size = int(os.getenv("CHATTERBOX_BATCH_SIZE", "4"))
+        num_batches = (len(sentences) + batch_size - 1) // batch_size
 
-        # Convert torch tensor to numpy and save
-        audio_np = wav.squeeze().cpu().numpy()
-        sf.write(str(raw_output), audio_np, self._chatterbox_model.sr)
+        audio_parts = []
+        for i in range(0, len(sentences), batch_size):
+            batch_num = i // batch_size + 1
+            batch = ' '.join(sentences[i:i + batch_size])
+
+            # Chatterbox ignores commas — replace with em-dashes to force pauses
+            batch = batch.replace(',', ' —')
+
+            print(f"    Generating audio batch {batch_num}/{num_batches}...")
+
+            generate_kwargs = dict(
+                text=batch,
+                exaggeration=self.chatterbox_exaggeration,
+                cfg_weight=self.chatterbox_cfg,
+            )
+            if self.chatterbox_voice_ref:
+                generate_kwargs["audio_prompt_path"] = self.chatterbox_voice_ref
+
+            wav = self._chatterbox_model.generate(**generate_kwargs)
+            audio_np = wav.squeeze().cpu().numpy()
+            audio_parts.append(audio_np)
+
+        # Concatenate with 50ms silence gaps between batches for natural pauses
+        sample_rate = self._chatterbox_model.sr
+        silence_samples = int(0.05 * sample_rate)  # 50ms
+        silence = np.zeros(silence_samples, dtype=audio_parts[0].dtype)
+
+        combined_parts = []
+        for i, part in enumerate(audio_parts):
+            combined_parts.append(part)
+            if i < len(audio_parts) - 1:  # Don't add silence after last batch
+                combined_parts.append(silence)
+
+        combined_audio = np.concatenate(combined_parts)
+        sf.write(str(raw_output), combined_audio, sample_rate)
 
         return raw_output
 

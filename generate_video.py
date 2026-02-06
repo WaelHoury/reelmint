@@ -153,12 +153,41 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                                                words_per_second=words_per_second,
                                                loop_mode=loop_mode)
 
+        # Print token usage report (OpenRouter only)
+        if llm_provider == "openrouter":
+            print(planner.get_token_report())
+
         # Print plan preview with Unicode-safe encoding for Windows
         try:
             print(planner.preview_continuous_plan(plan))
         except UnicodeEncodeError:
             preview = planner.preview_continuous_plan(plan)
             print(preview.encode('ascii', errors='replace').decode('ascii'))
+
+        # Save LLM output to text file
+        output_txt = Path(output_path).with_suffix('.txt')
+        try:
+            with open(output_txt, 'w', encoding='utf-8') as f:
+                f.write("=" * 70 + "\n")
+                f.write("LLM OUTPUT - VIDEO PLAN\n")
+                f.write("=" * 70 + "\n\n")
+
+                f.write("NARRATION SCRIPT:\n")
+                f.write("-" * 70 + "\n")
+                f.write(plan.narration + "\n\n")
+
+                f.write("=" * 70 + "\n")
+                f.write(f"VISUAL CLIPS ({len(plan.clips)} clips):\n")
+                f.write("=" * 70 + "\n\n")
+
+                for i, clip in enumerate(plan.clips, 1):
+                    f.write(f"Clip {i}:\n")
+                    f.write(f"  Keywords: {', '.join(clip.keywords)}\n")
+                    f.write(f"  Visual: {clip.visual_description}\n\n")
+
+            print(f"  Saved LLM output to: {output_txt}")
+        except Exception as e:
+            print(f"  Warning: Could not save LLM output to file: {e}")
 
         # Step 2: Generate continuous narration audio with word timestamps
         print("\n[2/5] Generating narration audio...")
