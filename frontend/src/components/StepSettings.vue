@@ -1,22 +1,41 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { createSession } from '../api'
+import { createSession, getStyles } from '../api'
 
 const emit = defineEmits(['created'])
 
 const loading = ref(false)
+const styles = ref([])
 
 const form = ref({
   title: '',
   inputType: 'prompt',
   prompt: '',
   script: '',
-  durationSeconds: 60,
+  narrationStyle: 'creative',
+  durationSeconds: 30,
   durationUnit: 'seconds',
   loopMode: false,
   subtitlesEnabled: true,
   orientation: 'landscape',
+})
+
+onMounted(async () => {
+  try {
+    const { data } = await getStyles()
+    styles.value = data.styles
+  } catch {
+    // Fallback styles if API unavailable
+    styles.value = [
+      { id: 'viral', name: 'Viral', description: 'Hook viewers with punchy facts' },
+      { id: 'informative', name: 'Informative', description: 'Expert teacher who makes complex topics simple' },
+      { id: 'funny', name: 'Funny', description: 'Comedian who makes every topic hilarious' },
+      { id: 'storytelling', name: 'Storytelling', description: 'Master storyteller who turns topics into narratives' },
+      { id: 'motivational', name: 'Motivational', description: 'Inspiring coach who empowers viewers' },
+      { id: 'creative', name: 'Creative', description: 'Curious overthinker having a late-night epiphany' },
+    ]
+  }
 })
 
 const durationInSeconds = computed(() => {
@@ -49,6 +68,7 @@ async function handleSubmit() {
     if (form.value.inputType === 'prompt') {
       payload.prompt = form.value.prompt.trim()
       payload.duration_seconds = durationInSeconds.value
+      payload.narration_style = form.value.narrationStyle
     } else {
       payload.script = form.value.script.trim()
       // Duration is auto-calculated from script word count
@@ -104,8 +124,25 @@ async function handleSubmit() {
         />
       </el-form-item>
 
+      <!-- Narration Style (only for prompt mode) -->
+      <el-form-item v-if="form.inputType === 'prompt'" label="Narration Style">
+        <el-select v-model="form.narrationStyle" style="width: 100%">
+          <el-option
+            v-for="style in styles"
+            :key="style.id"
+            :value="style.id"
+            :label="style.name"
+          >
+            <div style="display: flex; flex-direction: column; padding: 4px 0">
+              <span style="font-weight: 600">{{ style.name }}</span>
+              <span style="font-size: 12px; color: #909399; line-height: 1.4">{{ style.description }}</span>
+            </div>
+          </el-option>
+        </el-select>
+      </el-form-item>
+
       <!-- Script Input -->
-      <el-form-item v-else label="Narration Script">
+      <el-form-item v-if="form.inputType === 'script'" label="Narration Script">
         <el-input
           v-model="form.script"
           type="textarea"

@@ -8,6 +8,7 @@ from app.api.routes import (
     scripts_router,
     clips_router,
     videos_router,
+    config_router,
 )
 
 # Create FastAPI app
@@ -41,6 +42,7 @@ app.include_router(sessions_router, prefix="/api")
 app.include_router(scripts_router, prefix="/api")
 app.include_router(clips_router, prefix="/api")
 app.include_router(videos_router, prefix="/api")
+app.include_router(config_router, prefix="/api")
 
 
 # Root endpoint

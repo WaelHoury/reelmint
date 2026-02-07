@@ -39,9 +39,13 @@ To start RQ worker (in another terminal):
 {'='*60}
 """)
 
+    import os
+    use_reload = os.getenv("API_RELOAD", "false").lower() == "true"
+
     uvicorn.run(
         "app.api.main:app",
         host=settings.api_host,
         port=settings.api_port,
-        reload=True,  # Enable auto-reload for development
+        reload=use_reload,
+        reload_dirs=["app"] if use_reload else None,
     )

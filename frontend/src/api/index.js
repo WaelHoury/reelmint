@@ -5,6 +5,12 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+// === Config ===
+
+export function getStyles() {
+  return api.get('/styles')
+}
+
 // === Sessions ===
 
 export function createSession(data) {
@@ -71,6 +77,16 @@ export function getJobStatus(sessionId) {
 
 export function getVideoDownloadUrl(sessionId) {
   return `/api/sessions/${sessionId}/video`
+}
+
+export function getVideoStreamUrl(sessionId) {
+  return `/api/sessions/${sessionId}/video/stream`
+}
+
+// === Subtitles ===
+
+export function updateSubtitles(sessionId, settings) {
+  return api.put(`/sessions/${sessionId}/subtitles`, settings)
 }
 
 export default api

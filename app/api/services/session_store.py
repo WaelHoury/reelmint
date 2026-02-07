@@ -43,6 +43,7 @@ class VideoSession:
     input_type: Literal["prompt", "script"]
     prompt: Optional[str] = None
     script_text: Optional[str] = None
+    narration_style: Optional[str] = None
 
     # Computed
     word_count: Optional[int] = None
@@ -55,6 +56,20 @@ class VideoSession:
     job_id: Optional[str] = None
     progress_percent: Optional[int] = None
     current_step: Optional[str] = None
+
+    # Subtitle customization
+    subtitle_style: Optional[str] = None
+    subtitle_font: Optional[str] = None
+    subtitle_font_size: Optional[int] = None
+    subtitle_color: Optional[str] = None
+    subtitle_outline_color: Optional[str] = None
+    subtitle_position: Optional[str] = None
+
+    # Intermediate files for subtitle re-generation
+    temp_dir_path: Optional[str] = None
+    video_no_audio_path: Optional[str] = None
+    final_audio_path: Optional[str] = None
+    word_timestamps: Optional[List[Dict]] = None
 
     # Output
     output_path: Optional[str] = None
@@ -97,6 +112,7 @@ class SessionStore:
         loop_mode: bool = False,
         subtitles_enabled: bool = True,
         orientation: str = "landscape",
+        narration_style: Optional[str] = None,
     ) -> VideoSession:
         """Create a new session.
 
@@ -149,6 +165,7 @@ class SessionStore:
             input_type=input_type,
             prompt=prompt,
             script_text=script_text,
+            narration_style=narration_style,
             word_count=word_count,
             estimated_duration_seconds=estimated_duration,
         )

@@ -1,7 +1,7 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { startGeneration, getJobStatus, getVideoDownloadUrl } from '../api'
+import { startGeneration, getJobStatus, getVideoDownloadUrl, getVideoStreamUrl, updateSubtitles } from '../api'
 
 const props = defineProps({
   sessionId: { type: String, required: true },
@@ -16,6 +16,36 @@ const currentStep = ref('')
 const errorMessage = ref('')
 const jobId = ref(null)
 let pollTimer = null
+
+// Video player
+const videoKey = ref(0) // cache-busting key for video reload
+
+// Subtitle editor
+const showSubtitleEditor = ref(false)
+const subtitleLoading = ref(false)
+const subtitleForm = ref({
+  style: 'youtube',
+  font: 'Arial',
+  font_size: 52,
+  color: '#FFFFFF',
+  outline_color: '#000000',
+  position: 'bottom',
+})
+
+const fontOptions = [
+  'Arial',
+  'Montserrat-Bold',
+  'Helvetica',
+  'Comic Sans MS',
+  'Impact',
+  'Verdana',
+  'Georgia',
+  'Times New Roman',
+]
+
+const videoStreamSrc = computed(() => {
+  return getVideoStreamUrl(props.sessionId) + `?t=${videoKey.value}`
+})
 
 onMounted(async () => {
   await handleGenerate()
@@ -71,6 +101,31 @@ function startPolling() {
 function downloadVideo() {
   window.open(getVideoDownloadUrl(props.sessionId), '_blank')
 }
+
+function onStylePresetChange(preset) {
+  const presets = {
+    youtube: { font: 'Arial', font_size: 52, color: '#FFFFFF', outline_color: '#000000', position: 'bottom' },
+    tiktok: { font: 'Montserrat-Bold', font_size: 64, color: '#FFFFFF', outline_color: '#000000', position: 'center' },
+    minimal: { font: 'Helvetica', font_size: 44, color: '#FFFFFF', outline_color: '#000000', position: 'bottom' },
+  }
+  if (presets[preset]) {
+    Object.assign(subtitleForm.value, presets[preset])
+  }
+}
+
+async function applySubtitleChanges() {
+  subtitleLoading.value = true
+  try {
+    await updateSubtitles(props.sessionId, subtitleForm.value)
+    // Reload the video player by bumping the cache key
+    videoKey.value = Date.now()
+    ElMessage.success('Subtitles updated!')
+  } catch (err) {
+    ElMessage.error(err.response?.data?.detail || 'Failed to update subtitles')
+  } finally {
+    subtitleLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -95,18 +150,104 @@ function downloadVideo() {
 
     <!-- Completed -->
     <div v-else-if="status === 'completed'" class="result-section">
-      <el-result icon="success" title="Video Ready!" sub-title="Your video has been generated successfully.">
-        <template #extra>
-          <div style="display: flex; gap: 12px; justify-content: center">
-            <el-button type="primary" size="large" @click="downloadVideo">
-              <el-icon><Download /></el-icon> Download Video
-            </el-button>
-            <el-button size="large" @click="emit('reset')">
-              <el-icon><Plus /></el-icon> Create New Video
-            </el-button>
-          </div>
-        </template>
-      </el-result>
+      <el-result icon="success" title="Video Ready!" sub-title="Your video has been generated successfully." />
+
+      <!-- Video Player -->
+      <div class="video-player-section">
+        <video
+          :key="videoKey"
+          controls
+          width="100%"
+          style="max-width: 720px; border-radius: 8px; background: #000"
+        >
+          <source :src="videoStreamSrc" type="video/mp4">
+          Your browser does not support the video tag.
+        </video>
+      </div>
+
+      <!-- Action Buttons -->
+      <div style="display: flex; gap: 12px; justify-content: center; margin-top: 20px">
+        <el-button type="primary" size="large" @click="downloadVideo">
+          <el-icon><Download /></el-icon> Download Video
+        </el-button>
+        <el-button size="large" @click="showSubtitleEditor = !showSubtitleEditor">
+          <el-icon><EditPen /></el-icon> {{ showSubtitleEditor ? 'Hide' : 'Customize' }} Subtitles
+        </el-button>
+        <el-button size="large" @click="emit('reset')">
+          <el-icon><Plus /></el-icon> Create New Video
+        </el-button>
+      </div>
+
+      <!-- Subtitle Editor -->
+      <el-collapse-transition>
+        <div v-if="showSubtitleEditor" class="subtitle-editor">
+          <el-card shadow="never">
+            <template #header>
+              <span style="font-weight: 600">Customize Subtitles</span>
+            </template>
+
+            <el-form label-position="top" style="text-align: left">
+              <!-- Style Preset -->
+              <el-form-item label="Style Preset">
+                <el-select v-model="subtitleForm.style" @change="onStylePresetChange" style="width: 100%">
+                  <el-option value="youtube" label="YouTube" />
+                  <el-option value="tiktok" label="TikTok" />
+                  <el-option value="minimal" label="Minimal" />
+                </el-select>
+              </el-form-item>
+
+              <!-- Font -->
+              <el-form-item label="Font">
+                <el-select v-model="subtitleForm.font" style="width: 100%">
+                  <el-option v-for="f in fontOptions" :key="f" :value="f" :label="f" />
+                </el-select>
+              </el-form-item>
+
+              <!-- Font Size -->
+              <el-form-item label="Font Size">
+                <el-slider
+                  v-model="subtitleForm.font_size"
+                  :min="24"
+                  :max="96"
+                  :step="2"
+                  show-input
+                  style="padding-right: 16px"
+                />
+              </el-form-item>
+
+              <!-- Colors Row -->
+              <div style="display: flex; gap: 24px">
+                <el-form-item label="Text Color" style="flex: 1">
+                  <el-color-picker v-model="subtitleForm.color" show-alpha />
+                </el-form-item>
+                <el-form-item label="Outline Color" style="flex: 1">
+                  <el-color-picker v-model="subtitleForm.outline_color" show-alpha />
+                </el-form-item>
+              </div>
+
+              <!-- Position -->
+              <el-form-item label="Position">
+                <el-radio-group v-model="subtitleForm.position">
+                  <el-radio-button value="bottom">Bottom</el-radio-button>
+                  <el-radio-button value="center">Center</el-radio-button>
+                  <el-radio-button value="top">Top</el-radio-button>
+                </el-radio-group>
+              </el-form-item>
+
+              <!-- Apply Button -->
+              <el-form-item>
+                <el-button
+                  type="primary"
+                  :loading="subtitleLoading"
+                  @click="applySubtitleChanges"
+                >
+                  Apply Changes
+                </el-button>
+              </el-form-item>
+            </el-form>
+          </el-card>
+        </div>
+      </el-collapse-transition>
     </div>
 
     <!-- Failed -->
@@ -160,5 +301,16 @@ function downloadVideo() {
 
 .result-section {
   padding: 24px 0;
+}
+
+.video-player-section {
+  display: flex;
+  justify-content: center;
+  margin: 24px 0;
+}
+
+.subtitle-editor {
+  max-width: 500px;
+  margin: 24px auto 0;
 }
 </style>

@@ -1,12 +1,25 @@
 """Video generation and download API routes."""
 
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import FileResponse, StreamingResponse
+
+from pydantic import BaseModel, Field
+from typing import Optional
 
 from app.api.schemas import JobStatusResponse, VideoDownloadResponse
 from app.api.services.session_store import session_store
-from app.api.services.video_service import video_service
+from app.api.services.video_service import video_service, regenerate_subtitles
+
+
+class UpdateSubtitlesRequest(BaseModel):
+    """Request to update subtitle settings and re-generate."""
+    style: Optional[str] = Field(default="youtube", description="Preset: youtube, tiktok, minimal")
+    font: Optional[str] = Field(default=None, description="Font name")
+    font_size: Optional[int] = Field(default=None, ge=24, le=96, description="Font size")
+    color: Optional[str] = Field(default=None, description="Text color hex (#RRGGBB)")
+    outline_color: Optional[str] = Field(default=None, description="Outline color hex (#RRGGBB)")
+    position: Optional[str] = Field(default=None, description="Position: bottom, center, top")
 
 router = APIRouter(prefix="/sessions/{session_id}", tags=["videos"])
 
@@ -89,6 +102,77 @@ async def download_video(session_id: str):
     )
 
 
+@router.get("/video/stream")
+async def stream_video(session_id: str, request: Request):
+    """Stream the generated video with Range request support for in-browser playback."""
+    session = session_store.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video not ready. Status: {session.status}"
+        )
+
+    if not session.output_path:
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    video_path = Path(session.output_path)
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+
+    file_size = video_path.stat().st_size
+    range_header = request.headers.get("range")
+
+    if range_header:
+        # Parse Range header: "bytes=start-end"
+        range_val = range_header.strip().split("=")[1]
+        range_parts = range_val.split("-")
+        start = int(range_parts[0])
+        end = int(range_parts[1]) if range_parts[1] else file_size - 1
+        end = min(end, file_size - 1)
+        chunk_size = end - start + 1
+
+        def iter_file():
+            with open(video_path, "rb") as f:
+                f.seek(start)
+                remaining = chunk_size
+                while remaining > 0:
+                    read_size = min(8192, remaining)
+                    data = f.read(read_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            iter_file(),
+            status_code=206,
+            media_type="video/mp4",
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(chunk_size),
+            },
+        )
+
+    # No Range header — return full file
+    def iter_full():
+        with open(video_path, "rb") as f:
+            while chunk := f.read(8192):
+                yield chunk
+
+    return StreamingResponse(
+        iter_full(),
+        media_type="video/mp4",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(file_size),
+        },
+    )
+
+
 @router.get("/video/info", response_model=VideoDownloadResponse)
 async def get_video_info(session_id: str):
     """Get video download information."""
@@ -117,3 +201,25 @@ async def get_video_info(session_id: str):
         file_size_bytes=file_size,
         duration_seconds=session.estimated_duration_seconds,
     )
+
+
+@router.put("/subtitles")
+async def update_video_subtitles(session_id: str, request: UpdateSubtitlesRequest):
+    """Re-generate video subtitles with custom settings."""
+    session = session_store.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session.status != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video must be completed first. Status: {session.status}"
+        )
+
+    try:
+        updated = regenerate_subtitles(session, request.model_dump(exclude_none=True))
+        return {"status": "ok", "message": "Subtitles updated successfully"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

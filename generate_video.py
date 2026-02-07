@@ -11,7 +11,6 @@ import os
 from dotenv import load_dotenv
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
 
 from scene_planner import ScenePlanner
 from tts_generator import TTSGenerator
@@ -25,7 +24,11 @@ from subtitle_generator import SubtitleGenerator
 def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                    orientation: str = 'landscape',
                    temp_dir: Path = None, keep_temp: bool = False,
-                   script_text: str = None) -> Path:
+                   script_text: str = None,
+                   progress_callback=None,
+                   narration_style: str = None,
+                   subtitle_settings: dict = None,
+                   intermediate_callback=None) -> Path:
     """Generate video from text prompt or script.
 
     Args:
@@ -36,6 +39,10 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         temp_dir: Temporary working directory
         keep_temp: Keep temporary files after completion
         script_text: Optional user-provided narration script (bypasses LLM narration generation)
+        progress_callback: Optional function(percent: int, step: str) called at each stage
+        narration_style: Optional narration style override (viral, informative, funny, etc.)
+        subtitle_settings: Optional dict to override subtitle style (font, font_size, color, etc.)
+        intermediate_callback: Optional function(data: dict) called with intermediate file paths for re-generation
 
     Returns:
         Path to generated video file
@@ -43,6 +50,10 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
     Raises:
         Exception: If any step fails
     """
+    def _report(percent, step):
+        if progress_callback:
+            progress_callback(percent, step)
+
     output_path = Path(output_path)
 
     # Setup temp directory
@@ -68,7 +79,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
 
-        narration_style = os.getenv("NARRATION_STYLE", "viral").lower()
+        narration_style = narration_style or os.getenv("NARRATION_STYLE", "viral").lower()
 
         if llm_provider == "openrouter":
             planner = ScenePlanner(
@@ -124,6 +135,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         # Step 1: Generate video plan (continuous narration + visual clips)
         print("\n[1/5] Generating video plan...")
+        _report(10, "Generating video plan...")
 
         # Adjust words-per-second target based on TTS engine and speed settings.
         # Manual override takes priority; otherwise use engine-specific defaults.
@@ -191,6 +203,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         # Step 2: Generate continuous narration audio with word timestamps
         print("\n[2/5] Generating narration audio...")
+        _report(25, "Generating narration audio...")
         narration_raw = temp_dir / "narration_raw.wav"
         narration_audio = temp_dir / "narration.wav"
 
@@ -234,6 +247,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         # Step 3: Search, download, and score video clips
         print("\n[3/5] Searching and scoring videos...")
+        _report(35, "Searching and scoring videos...")
         trimmed_videos = []
         used_video_ids = set()
 
@@ -271,7 +285,11 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             searcher.download(vid_info, dl_path)
             return {'path': dl_path, 'info': vid_info}
 
-        for i, clip in enumerate(tqdm(plan.clips, desc="Clips")):
+        # Process clips in parallel (2 at a time overlaps downloads with CLIP scoring)
+        clip_lock = threading.Lock()
+        clip_results = [None] * num_clips  # ordered results
+
+        def _process_clip(i, clip):
             clip_dir = temp_dir / f"clip_{i}"
             clip_dir.mkdir(exist_ok=True)
 
@@ -279,15 +297,15 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             videos = searcher.search(clip.keywords, max_results=20, orientation=orientation)
 
             if not videos:
-                # Fallback: try broader search with first keyword only
                 print(f"    Warning: No videos found, trying broader search...")
                 videos = searcher.search(clip.keywords[:1], max_results=20, orientation=orientation)
 
             if not videos:
                 raise ValueError(f"No videos found for clip {i} keywords: {clip.keywords}")
 
-            # Filter out duplicates
-            available_videos = [v for v in videos if v.id not in used_video_ids]
+            # Filter out duplicates (thread-safe read)
+            with clip_lock:
+                available_videos = [v for v in videos if v.id not in used_video_ids]
             if not available_videos:
                 available_videos = videos
 
@@ -308,21 +326,23 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             if not downloaded:
                 raise ValueError(f"Failed to download any videos for clip {i}")
 
-            # Score with CLIP
+            # Score with CLIP (frame extraction parallelized internally)
             score_text = f"{clip.visual_description}. {' '.join(clip.keywords)}"
             video_paths = [d['path'] for d in downloaded]
 
-            print(f"  Scoring {len(video_paths)} videos with CLIP...")
+            print(f"    Scoring {len(video_paths)} candidates with CLIP...")
             scores = matcher.score_videos(video_paths, score_text)
 
             best_path = max(scores, key=scores.get)
             best_score = scores[best_path]
             best_info = next(d['info'] for d in downloaded if d['path'] == best_path)
 
-            print(f"  Best match: score={best_score:.3f}")
+            print(f"    Best match: score={best_score:.3f}")
 
-            tracker.add_asset(best_info.to_dict(), i)
-            used_video_ids.add(best_info.id)
+            # Track asset (thread-safe)
+            with clip_lock:
+                tracker.add_asset(best_info.to_dict(), i)
+                used_video_ids.add(best_info.id)
 
             # Single-pass: normalize + color grade + trim
             trimmed_path = clip_dir / "trimmed.mp4"
@@ -333,12 +353,24 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 orientation=orientation
             )
 
-            trimmed_videos.append(trimmed_path)
-
             # Clean up candidates
             for d in downloaded:
                 if d['path'] != best_path and d['path'].exists():
                     d['path'].unlink()
+
+            print(f"  Clip {i+1}/{num_clips} done")
+            return trimmed_path
+
+        with ThreadPoolExecutor(max_workers=2) as clip_pool:
+            futures = {
+                clip_pool.submit(_process_clip, i, clip): i
+                for i, clip in enumerate(plan.clips)
+            }
+            for future in as_completed(futures):
+                idx = futures[future]
+                clip_results[idx] = future.result()
+
+        trimmed_videos = clip_results
 
         # Loop mode: replace last clip with a copy of the first clip
         if loop_mode and len(trimmed_videos) >= 2:
@@ -377,6 +409,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         # Step 4: Assemble final video
         print("\n[4/5] Assembling final video...")
+        _report(75, "Assembling final video...")
 
         # Concatenate video clips with transitions
         transition_type = os.getenv("TRANSITION_TYPE", "crossfade")
@@ -421,73 +454,49 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 print(f"    Warning: {e}")
                 print(f"    Continuing without background music")
 
-        # Mux audio and video
-        print("  Muxing audio and video...")
+        # Prepare subscribe overlay if enabled
         needs_overlay = os.getenv("ENABLE_SUBSCRIBE_OVERLAY", "false").lower() == "true"
         needs_subtitles = os.getenv("ENABLE_SUBTITLES", "true").lower() == "true"
 
-        if needs_overlay or needs_subtitles:
-            video_after_mux = temp_dir / "video_muxed.mp4"
-        else:
-            video_after_mux = output_path
-        assembler.mux_audio(video_no_audio, final_audio, video_after_mux)
-
-        # Apply subscribe button overlay if enabled
+        subscribe_video_path = None
+        subscribe_params = None
         if needs_overlay:
             subscribe_path = Path(os.getenv("SUBSCRIBE_VIDEO_PATH", "subscribe.mp4"))
             if not subscribe_path.is_absolute():
                 subscribe_path = Path(__file__).parent / subscribe_path
-
             if subscribe_path.exists():
-                print("  Adding subscribe button overlay...")
-                from effects_engine import EffectsEngine as _EE
-                overlay_effects = _EE(
-                    ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
-                    ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
-                )
-
-                video_after_overlay = temp_dir / "video_overlaid.mp4" if needs_subtitles else output_path
-                overlay_effects.apply_subscribe_overlay(
-                    input_video=video_after_mux,
-                    subscribe_video=subscribe_path,
-                    output_video=video_after_overlay,
-                    orientation=orientation,
-                    scale=float(os.getenv("SUBSCRIBE_SCALE", "0")) or None,
-                    margin_bottom=int(os.getenv("SUBSCRIBE_MARGIN_BOTTOM", "50")),
-                    chromakey_color=os.getenv("SUBSCRIBE_CHROMAKEY_COLOR", "0x00FF00"),
-                    chromakey_similarity=float(os.getenv("SUBSCRIBE_CHROMAKEY_SIMILARITY", "0.3")),
-                    chromakey_blend=float(os.getenv("SUBSCRIBE_CHROMAKEY_BLEND", "0.15")),
-                )
-                if video_after_mux.exists() and video_after_mux != output_path:
-                    video_after_mux.unlink()
-                video_without_subs = video_after_overlay
+                subscribe_video_path = subscribe_path
+                subscribe_params = {
+                    'orientation': orientation,
+                    'scale': float(os.getenv("SUBSCRIBE_SCALE", "0")) or None,
+                    'margin_bottom': int(os.getenv("SUBSCRIBE_MARGIN_BOTTOM", "50")),
+                    'chromakey_color': os.getenv("SUBSCRIBE_CHROMAKEY_COLOR", "0x00FF00"),
+                    'chromakey_similarity': float(os.getenv("SUBSCRIBE_CHROMAKEY_SIMILARITY", "0.3")),
+                    'chromakey_blend': float(os.getenv("SUBSCRIBE_CHROMAKEY_BLEND", "0.15")),
+                }
             else:
                 print(f"    Warning: Subscribe video not found at {subscribe_path}, skipping overlay")
-                video_without_subs = video_after_mux
-        else:
-            video_without_subs = video_after_mux
 
-        # Add subtitles if enabled
+        # Generate subtitle file if enabled
+        subtitle_file = None
         if needs_subtitles:
-            print("  Adding subtitles...")
+            print("  Generating subtitles...")
 
             sub_gen = SubtitleGenerator(
                 style=os.getenv("SUBTITLE_STYLE", "youtube"),
-                orientation=orientation
+                orientation=orientation,
+                custom_overrides=subtitle_settings,
             )
-            subtitle_path = temp_dir / "subtitles.ass"
+            subtitle_file = temp_dir / "subtitles.ass"
 
             if word_timestamps:
                 if orientation in ('portrait', 'square'):
-                    # Word-by-word karaoke subtitles with highlighting for portrait/square
                     print(f"  Using karaoke-style subtitles (phrase grouping with highlight)...")
-                    sub_gen.generate_karaoke_ass(word_timestamps, subtitle_path)
+                    sub_gen.generate_karaoke_ass(word_timestamps, subtitle_file)
                 else:
-                    # Landscape: phrase-based subtitles (2-3 words at a time, no highlight)
                     print(f"  Using phrase-based subtitles (2-3 words, accurate sync)...")
-                    sub_gen.generate_phrase_ass(word_timestamps, subtitle_path)
+                    sub_gen.generate_phrase_ass(word_timestamps, subtitle_file)
             else:
-                # Fallback: no word timestamps available, use sentence-based estimation
                 import re as _re
                 sentences = _re.split(r'(?<=[.!?])\s+', plan.narration.strip())
                 sentences = [s for s in sentences if s.strip()]
@@ -507,38 +516,61 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                         })
                         current_time += duration
 
-                    sub_gen.generate_ass(subtitle_scenes, subtitle_path)
+                    sub_gen.generate_ass(subtitle_scenes, subtitle_file)
                 else:
-                    # Fallback: show entire narration
                     sub_gen.generate_ass([{
                         'narration': plan.narration,
                         'start_time': 0.0,
                         'duration': total_duration
-                    }], subtitle_path)
+                    }], subtitle_file)
 
-            print("  Burning subtitles into video...")
-            sub_gen.burn_subtitles(video_without_subs, subtitle_path, output_path)
-
-            if video_without_subs.exists() and video_without_subs != output_path:
-                video_without_subs.unlink()
-
-        # Apply fade-to-black for non-loop videos to avoid abrupt ending
+        # Determine fade-out duration
+        fade_dur = 0
         if not loop_mode:
-            fade_duration = float(os.getenv("FADE_OUT_DURATION", "1.0"))
-            if fade_duration > 0:
-                print("  Applying fade-out to end of video...")
-                from effects_engine import EffectsEngine as _EE
-                fade_effects = _EE(
-                    ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
-                    ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
-                )
-                faded_path = temp_dir / "video_faded.mp4"
-                fade_effects.apply_fade_out(output_path, faded_path, fade_duration=fade_duration)
-                # Replace output with faded version
-                faded_path.replace(output_path)
+            fade_dur = float(os.getenv("FADE_OUT_DURATION", "1.0"))
+
+        # Finalize: mux audio + overlay + subtitles + fade in a single FFmpeg pass
+        from effects_engine import EffectsEngine
+        finalizer = EffectsEngine(
+            ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
+            ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
+        )
+
+        effects_summary = []
+        if subscribe_video_path:
+            effects_summary.append("overlay")
+        if subtitle_file:
+            effects_summary.append("subtitles")
+        if fade_dur > 0:
+            effects_summary.append(f"fade-out ({fade_dur}s)")
+
+        if effects_summary:
+            print(f"  Finalizing video (mux + {' + '.join(effects_summary)}) in single pass...")
+        else:
+            print("  Muxing audio and video...")
+
+        finalizer.finalize_video(
+            video_no_audio=video_no_audio,
+            audio_path=final_audio,
+            output_path=output_path,
+            subtitle_path=subtitle_file,
+            subscribe_video=subscribe_video_path,
+            subscribe_params=subscribe_params,
+            fade_duration=fade_dur,
+        )
+
+        # Save intermediate data for subtitle re-generation
+        if intermediate_callback:
+            intermediate_callback({
+                'temp_dir': str(temp_dir),
+                'video_no_audio': str(video_no_audio),
+                'final_audio': str(final_audio),
+                'word_timestamps': word_timestamps,
+            })
 
         # Generate credits
         print("\n[5/5] Generating credits...")
+        _report(95, "Generating credits...")
         credits_path = output_path.parent / f"{output_path.stem}_credits.txt"
         tracker.export_credits_txt(credits_path)
 

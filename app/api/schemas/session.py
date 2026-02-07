@@ -25,6 +25,7 @@ class CreateSessionRequest(BaseModel):
     loop_mode: bool = Field(default=False)
     subtitles_enabled: bool = Field(default=True)
     orientation: Literal["landscape", "portrait", "square"] = Field(default="landscape")
+    narration_style: Optional[str] = Field(default=None, description="Narration style for prompt mode (viral, informative, funny, storytelling, motivational, creative)")
 
 
 class SessionResponse(BaseModel):

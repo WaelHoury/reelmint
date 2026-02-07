@@ -437,7 +437,7 @@ class EffectsEngine:
         input_video = Path(input_video)
         output_video = Path(output_video)
 
-        video_duration = self._get_video_duration(input_video)
+        video_duration = self._get_duration(input_video)
         fade_start = max(0, video_duration - fade_duration)
 
         cmd = [
@@ -452,3 +452,138 @@ class EffectsEngine:
 
         subprocess.run(cmd, capture_output=True, check=True)
         return output_video
+
+    def finalize_video(self, video_no_audio: Path, audio_path: Path,
+                       output_path: Path,
+                       subtitle_path: Path = None,
+                       subscribe_video: Path = None,
+                       subscribe_params: dict = None,
+                       fade_duration: float = 0) -> Path:
+        """Mux audio and apply overlay + subtitles + fade in a single FFmpeg pass.
+
+        Combines what used to be 3-4 separate re-encode passes into one.
+        If no effects are needed, falls back to a fast mux with -c:v copy.
+
+        Args:
+            video_no_audio: Video file without audio (from concat step)
+            audio_path: Final audio file (narration, optionally mixed with music)
+            output_path: Where to write the finished video
+            subtitle_path: Optional ASS subtitle file to burn in
+            subscribe_video: Optional green-screen subscribe button video
+            subscribe_params: Dict with overlay settings (orientation, scale,
+                              margin_bottom, chromakey_color, chromakey_similarity,
+                              chromakey_blend)
+            fade_duration: Fade-to-black duration in seconds (0 = no fade)
+
+        Returns:
+            Path to output video
+        """
+        video_no_audio = Path(video_no_audio)
+        audio_path = Path(audio_path)
+        output_path = Path(output_path)
+
+        needs_overlay = subscribe_video is not None and Path(subscribe_video).exists()
+        needs_subtitles = subtitle_path is not None
+        needs_fade = fade_duration > 0
+        needs_effects = needs_overlay or needs_subtitles or needs_fade
+
+        if not needs_effects:
+            # Fast path: just mux audio, no re-encoding
+            cmd = [
+                self.ffmpeg_path,
+                '-i', str(video_no_audio),
+                '-i', str(audio_path),
+                '-c:v', 'copy',
+                '-c:a', 'aac', '-b:a', '192k',
+                '-map', '0:v', '-map', '1:a',
+                '-shortest',
+                '-movflags', '+faststart',
+                '-y', str(output_path)
+            ]
+            subprocess.run(cmd, capture_output=True, check=True)
+            return output_path
+
+        video_duration = self._get_duration(video_no_audio)
+
+        # --- Build inputs ---
+        cmd = [self.ffmpeg_path]
+        cmd.extend(['-i', str(video_no_audio)])   # [0] video (no audio)
+        cmd.extend(['-i', str(audio_path)])        # [1] audio
+        if needs_overlay:
+            cmd.extend(['-i', str(subscribe_video)])  # [2] subscribe video
+
+        # --- Build video filter chain ---
+        if needs_overlay:
+            p = subscribe_params or {}
+            from video_assembler import get_resolution
+
+            sub_dur = self._get_duration(subscribe_video)
+            start = max(0, (video_duration / 2) - (sub_dur / 2))
+
+            ori = p.get('orientation', 'landscape')
+            sc = p.get('scale')
+            if not sc or sc <= 0:
+                sc = {'landscape': 0.60, 'portrait': 0.75, 'square': 0.65}.get(ori, 0.60)
+            w, _ = get_resolution(ori)
+            ow = int(w * sc)
+            mb = p.get('margin_bottom', 50)
+            ck_color = p.get('chromakey_color', '0x60FA01')
+            ck_sim = p.get('chromakey_similarity', 0.3)
+            ck_blend = p.get('chromakey_blend', 0.12)
+
+            # Overlay: scale + colorkey subscribe, overlay onto main video
+            overlay_chain = (
+                f"[2:v]scale={ow}:-1:flags=lanczos,"
+                f"colorkey={ck_color}:{ck_sim}:{ck_blend},"
+                f"format=rgba,"
+                f"setpts=PTS+{start:.3f}/TB[ovr];"
+                f"[0:v][ovr]overlay=x=(W-w)/2:y=H-h-{mb}:eof_action=pass"
+            )
+        else:
+            overlay_chain = None
+
+        # Subsequent filters (appended after overlay or directly on [0:v])
+        post_filters = []
+        if needs_subtitles:
+            sub_str = str(Path(subtitle_path).resolve()).replace('\\', '/')
+            sub_str = sub_str.replace(':', '\\:')
+            post_filters.append(f"ass='{sub_str}'")
+        if needs_fade:
+            fade_start = max(0, video_duration - fade_duration)
+            post_filters.append(f"fade=t=out:st={fade_start:.3f}:d={fade_duration}")
+
+        # Combine into complete video filter
+        if overlay_chain:
+            if post_filters:
+                video_filter = overlay_chain + "," + ",".join(post_filters) + "[outv]"
+            else:
+                video_filter = overlay_chain + "[outv]"
+        else:
+            # No overlay — chain directly from input
+            video_filter = "[0:v]" + ",".join(post_filters) + "[outv]"
+
+        # --- Build audio filter ---
+        if needs_fade:
+            fade_start = max(0, video_duration - fade_duration)
+            filter_complex = video_filter + f";[1:a]afade=t=out:st={fade_start:.3f}:d={fade_duration}[outa]"
+            audio_map = ['-map', '[outa]']
+            audio_codec = ['-c:a', 'aac', '-b:a', '192k']
+        else:
+            filter_complex = video_filter
+            audio_map = ['-map', '1:a']
+            audio_codec = ['-c:a', 'aac', '-b:a', '192k']
+
+        # --- Assemble final command ---
+        cmd.extend([
+            '-filter_complex', filter_complex,
+            '-map', '[outv]',
+            *audio_map,
+            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-pix_fmt', 'yuv420p',
+            *audio_codec,
+            '-movflags', '+faststart',
+            '-y', str(output_path)
+        ])
+
+        subprocess.run(cmd, capture_output=True, check=True)
+        return output_path

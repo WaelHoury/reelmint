@@ -39,12 +39,13 @@ class VideoService:
         # Generate script from prompt using LLM
         from app.core import ScenePlanner
 
+        style = session.narration_style or settings.narration_style
         planner = ScenePlanner(
             provider=settings.llm_provider,
             model=settings.ollama_model if settings.llm_provider == "ollama" else settings.openrouter_model,
             base_url=settings.ollama_base_url if settings.llm_provider == "ollama" else settings.openrouter_base_url,
             api_key=settings.openrouter_api_key if settings.llm_provider == "openrouter" else None,
-            narration_style=settings.narration_style,
+            narration_style=style,
         )
 
         duration_minutes = session.duration_seconds / 60
@@ -298,6 +299,20 @@ def generate_video_task(session_id: str):
         session.progress_percent = 5
         session_store.update(session)
 
+        # Progress callback that writes to Redis so the frontend can poll
+        def _update_progress(percent, step):
+            session.progress_percent = percent
+            session.current_step = step
+            session_store.update(session)
+
+        # Intermediate callback to save file paths for subtitle re-generation
+        def _save_intermediates(data):
+            session.temp_dir_path = data.get('temp_dir')
+            session.video_no_audio_path = data.get('video_no_audio')
+            session.final_audio_path = data.get('final_audio')
+            session.word_timestamps = data.get('word_timestamps')
+            session_store.update(session)
+
         # Generate video using existing function
         output_path = Path(settings.output_dir) / f"{session.title}.mp4"
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -308,7 +323,10 @@ def generate_video_task(session_id: str):
             output_path=output_path,
             orientation=session.orientation,
             script_text=session.script_text,
-            keep_temp=False,
+            keep_temp=True,  # Keep temp files for subtitle re-generation
+            progress_callback=_update_progress,
+            narration_style=session.narration_style,
+            intermediate_callback=_save_intermediates,
         )
 
         session.status = "completed"
@@ -322,6 +340,137 @@ def generate_video_task(session_id: str):
         session.error_message = str(e)
         session_store.update(session)
         raise
+
+
+def regenerate_subtitles(session: VideoSession, subtitle_settings: dict) -> VideoSession:
+    """Re-generate subtitles with custom settings without re-running the full pipeline.
+
+    Args:
+        session: Completed session with intermediate files
+        subtitle_settings: Dict with keys: style, font, font_size, color, outline_color, position
+
+    Returns:
+        Updated session
+    """
+    if session.status != "completed":
+        raise ValueError("Video must be completed before editing subtitles")
+
+    if not session.video_no_audio_path or not session.final_audio_path:
+        raise ValueError("Intermediate files not available for subtitle re-generation")
+
+    from pathlib import Path
+    from subtitle_generator import SubtitleGenerator
+    from effects_engine import EffectsEngine
+    import os
+
+    video_no_audio = Path(session.video_no_audio_path)
+    final_audio = Path(session.final_audio_path)
+    temp_dir = Path(session.temp_dir_path) if session.temp_dir_path else video_no_audio.parent
+
+    if not video_no_audio.exists() or not final_audio.exists():
+        raise ValueError("Intermediate video/audio files no longer exist on disk")
+
+    # Build custom overrides from settings
+    custom_overrides = {}
+    if subtitle_settings.get('font'):
+        custom_overrides['font'] = subtitle_settings['font']
+    if subtitle_settings.get('font_size'):
+        custom_overrides['font_size'] = subtitle_settings['font_size']
+    if subtitle_settings.get('color'):
+        custom_overrides['color'] = subtitle_settings['color']
+    if subtitle_settings.get('outline_color'):
+        custom_overrides['outline_color'] = subtitle_settings['outline_color']
+    if subtitle_settings.get('position'):
+        custom_overrides['position'] = subtitle_settings['position']
+
+    style_preset = subtitle_settings.get('style', os.getenv("SUBTITLE_STYLE", "youtube"))
+
+    # Generate new subtitle file
+    sub_gen = SubtitleGenerator(
+        style=style_preset,
+        orientation=session.orientation,
+        custom_overrides=custom_overrides if custom_overrides else None,
+    )
+
+    subtitle_file = temp_dir / "subtitles_custom.ass"
+    word_timestamps = session.word_timestamps
+
+    if word_timestamps:
+        if session.orientation in ('portrait', 'square'):
+            sub_gen.generate_karaoke_ass(word_timestamps, subtitle_file)
+        else:
+            sub_gen.generate_phrase_ass(word_timestamps, subtitle_file)
+    else:
+        # Fallback to sentence-based
+        import re
+        narration = session.script_text or ""
+        sentences = re.split(r'(?<=[.!?])\s+', narration.strip())
+        sentences = [s for s in sentences if s.strip()]
+        if sentences:
+            total_duration = session.estimated_duration_seconds or 60
+            total_chars = sum(len(s) for s in sentences)
+            subtitle_scenes = []
+            current_time = 0.0
+            for sentence in sentences:
+                dur = total_duration * (len(sentence) / total_chars) if total_chars > 0 else 0
+                subtitle_scenes.append({
+                    'narration': sentence,
+                    'start_time': current_time,
+                    'duration': dur,
+                })
+                current_time += dur
+            sub_gen.generate_ass(subtitle_scenes, subtitle_file)
+
+    # Re-run finalize with new subtitles
+    finalizer = EffectsEngine(
+        ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
+        ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe"),
+    )
+
+    output_path = Path(session.output_path)
+
+    # Check for subscribe overlay
+    subscribe_video_path = None
+    subscribe_params = None
+    if os.getenv("ENABLE_SUBSCRIBE_OVERLAY", "false").lower() == "true":
+        subscribe_path = Path(os.getenv("SUBSCRIBE_VIDEO_PATH", "subscribe.mp4"))
+        if not subscribe_path.is_absolute():
+            subscribe_path = Path(os.path.dirname(os.path.abspath(__file__))).parent.parent.parent / subscribe_path
+        if subscribe_path.exists():
+            subscribe_video_path = subscribe_path
+            subscribe_params = {
+                'orientation': session.orientation,
+                'scale': float(os.getenv("SUBSCRIBE_SCALE", "0")) or None,
+                'margin_bottom': int(os.getenv("SUBSCRIBE_MARGIN_BOTTOM", "50")),
+                'chromakey_color': os.getenv("SUBSCRIBE_CHROMAKEY_COLOR", "0x00FF00"),
+                'chromakey_similarity': float(os.getenv("SUBSCRIBE_CHROMAKEY_SIMILARITY", "0.3")),
+                'chromakey_blend': float(os.getenv("SUBSCRIBE_CHROMAKEY_BLEND", "0.15")),
+            }
+
+    fade_dur = 0
+    if not session.loop_mode:
+        fade_dur = float(os.getenv("FADE_OUT_DURATION", "1.0"))
+
+    finalizer.finalize_video(
+        video_no_audio=video_no_audio,
+        audio_path=final_audio,
+        output_path=output_path,
+        subtitle_path=subtitle_file,
+        subscribe_video=subscribe_video_path,
+        subscribe_params=subscribe_params,
+        fade_duration=fade_dur,
+    )
+
+    # Save subtitle settings to session
+    session.subtitle_style = subtitle_settings.get('style')
+    session.subtitle_font = subtitle_settings.get('font')
+    session.subtitle_font_size = subtitle_settings.get('font_size')
+    session.subtitle_color = subtitle_settings.get('color')
+    session.subtitle_outline_color = subtitle_settings.get('outline_color')
+    session.subtitle_position = subtitle_settings.get('position')
+    session_store.update(session)
+
+    return session
 
 
 # Global video service instance

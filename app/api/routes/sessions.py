@@ -26,6 +26,7 @@ async def create_session(request: CreateSessionRequest):
             loop_mode=request.loop_mode,
             subtitles_enabled=request.subtitles_enabled,
             orientation=request.orientation,
+            narration_style=request.narration_style,
         )
         return _session_to_response(session)
     except ValueError as e:
