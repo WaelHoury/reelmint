@@ -110,6 +110,15 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     session_ttl_hours: int = 24
 
+    # === Database ===
+    database_url: str = "postgresql://aivideo:aivideo_dev@localhost:5432/aivideo"
+
+    # === Auth ===
+    google_client_id: str = ""
+    jwt_secret_key: str = "change-me-in-production"
+    jwt_algorithm: str = "HS256"
+    jwt_expiry_hours: int = 72
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

@@ -5,6 +5,8 @@ from .scripts import router as scripts_router
 from .clips import router as clips_router
 from .videos import router as videos_router
 from .config import router as config_router
+from .auth import router as auth_router
+from .library import router as library_router
 
 __all__ = [
     'sessions_router',
@@ -12,4 +14,6 @@ __all__ = [
     'clips_router',
     'videos_router',
     'config_router',
+    'auth_router',
+    'library_router',
 ]

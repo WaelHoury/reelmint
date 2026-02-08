@@ -1,6 +1,6 @@
 """Session management API routes."""
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.schemas import (
     CreateSessionRequest,
@@ -9,12 +9,14 @@ from app.api.schemas import (
     SessionSettings,
 )
 from app.api.services.session_store import session_store
+from app.api.deps import get_current_user
+from app.db.models import User
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
 @router.post("", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
-async def create_session(request: CreateSessionRequest):
+async def create_session(request: CreateSessionRequest, user: User = Depends(get_current_user)):
     """Create a new video generation session."""
     try:
         session = session_store.create(
@@ -27,6 +29,7 @@ async def create_session(request: CreateSessionRequest):
             subtitles_enabled=request.subtitles_enabled,
             orientation=request.orientation,
             narration_style=request.narration_style,
+            user_id=user.id,
         )
         return _session_to_response(session)
     except ValueError as e:
@@ -34,7 +37,7 @@ async def create_session(request: CreateSessionRequest):
 
 
 @router.get("", response_model=SessionListResponse)
-async def list_sessions():
+async def list_sessions(user: User = Depends(get_current_user)):
     """List all sessions."""
     sessions = session_store.list_all()
     return SessionListResponse(
@@ -44,7 +47,7 @@ async def list_sessions():
 
 
 @router.get("/{session_id}", response_model=SessionResponse)
-async def get_session(session_id: str):
+async def get_session(session_id: str, user: User = Depends(get_current_user)):
     """Get session by ID."""
     session = session_store.get(session_id)
     if not session:
@@ -53,7 +56,7 @@ async def get_session(session_id: str):
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, user: User = Depends(get_current_user)):
     """Delete a session."""
     if not session_store.delete(session_id):
         raise HTTPException(status_code=404, detail="Session not found")

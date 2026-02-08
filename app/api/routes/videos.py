@@ -1,7 +1,7 @@
 """Video generation and download API routes."""
 
 from pathlib import Path
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from pydantic import BaseModel, Field
@@ -10,6 +10,8 @@ from typing import Optional
 from app.api.schemas import JobStatusResponse, VideoDownloadResponse
 from app.api.services.session_store import session_store
 from app.api.services.video_service import video_service, regenerate_subtitles
+from app.api.deps import get_current_user, get_current_user_from_token_param
+from app.db.models import User
 
 
 class UpdateSubtitlesRequest(BaseModel):
@@ -25,7 +27,7 @@ router = APIRouter(prefix="/sessions/{session_id}", tags=["videos"])
 
 
 @router.post("/generate", response_model=JobStatusResponse)
-async def start_video_generation(session_id: str):
+async def start_video_generation(session_id: str, user: User = Depends(get_current_user)):
     """Start video generation as background job."""
     session = session_store.get(session_id)
     if not session:
@@ -50,7 +52,7 @@ async def start_video_generation(session_id: str):
 
 
 @router.get("/status", response_model=JobStatusResponse)
-async def get_job_status(session_id: str):
+async def get_job_status(session_id: str, user: User = Depends(get_current_user)):
     """Get video generation job status."""
     session = session_store.get(session_id)
     if not session:
@@ -76,7 +78,7 @@ async def get_job_status(session_id: str):
 
 
 @router.get("/video")
-async def download_video(session_id: str):
+async def download_video(session_id: str, user: User = Depends(get_current_user_from_token_param)):
     """Download the generated video."""
     session = session_store.get(session_id)
     if not session:
@@ -103,7 +105,7 @@ async def download_video(session_id: str):
 
 
 @router.get("/video/stream")
-async def stream_video(session_id: str, request: Request):
+async def stream_video(session_id: str, request: Request, user: User = Depends(get_current_user_from_token_param)):
     """Stream the generated video with Range request support for in-browser playback."""
     session = session_store.get(session_id)
     if not session:
@@ -174,7 +176,7 @@ async def stream_video(session_id: str, request: Request):
 
 
 @router.get("/video/info", response_model=VideoDownloadResponse)
-async def get_video_info(session_id: str):
+async def get_video_info(session_id: str, user: User = Depends(get_current_user)):
     """Get video download information."""
     session = session_store.get(session_id)
     if not session:
@@ -204,7 +206,7 @@ async def get_video_info(session_id: str):
 
 
 @router.put("/subtitles")
-async def update_video_subtitles(session_id: str, request: UpdateSubtitlesRequest):
+async def update_video_subtitles(session_id: str, request: UpdateSubtitlesRequest, user: User = Depends(get_current_user)):
     """Re-generate video subtitles with custom settings."""
     session = session_store.get(session_id)
     if not session:

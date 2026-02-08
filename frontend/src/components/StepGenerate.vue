@@ -32,6 +32,10 @@ const subtitleForm = ref({
   position: 'bottom',
 })
 
+// Live CSS subtitle preview
+const previewEnabled = ref(true)
+const previewText = ref('This is a subtitle preview')
+
 const fontOptions = [
   'Arial',
   'Montserrat-Bold',
@@ -44,7 +48,47 @@ const fontOptions = [
 ]
 
 const videoStreamSrc = computed(() => {
-  return getVideoStreamUrl(props.sessionId) + `?t=${videoKey.value}`
+  return getVideoStreamUrl(props.sessionId) + `&t=${videoKey.value}`
+})
+
+// Scale FFmpeg font size (designed for 1920w) to ~720px player width
+const previewStyle = computed(() => {
+  const f = subtitleForm.value
+  const scaledSize = Math.round(f.font_size * 0.375)
+  const oc = f.outline_color || '#000000'
+  // 8-direction text-shadow to simulate outline
+  const shadow = [
+    `1px 1px 2px ${oc}`, `-1px -1px 2px ${oc}`,
+    `1px -1px 2px ${oc}`, `-1px 1px 2px ${oc}`,
+    `0 2px 2px ${oc}`, `0 -2px 2px ${oc}`,
+    `2px 0 2px ${oc}`, `-2px 0 2px ${oc}`,
+  ].join(', ')
+
+  const style = {
+    fontFamily: f.font,
+    fontSize: `${scaledSize}px`,
+    color: f.color || '#FFFFFF',
+    textShadow: shadow,
+    pointerEvents: 'none',
+    position: 'absolute',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    textAlign: 'center',
+    maxWidth: '90%',
+    fontWeight: '700',
+    lineHeight: '1.3',
+  }
+
+  if (f.position === 'top') {
+    style.top = '10%'
+  } else if (f.position === 'center') {
+    style.top = '50%'
+    style.transform = 'translate(-50%, -50%)'
+  } else {
+    style.bottom = '15%'
+  }
+
+  return style
 })
 
 onMounted(async () => {
@@ -152,17 +196,26 @@ async function applySubtitleChanges() {
     <div v-else-if="status === 'completed'" class="result-section">
       <el-result icon="success" title="Video Ready!" sub-title="Your video has been generated successfully." />
 
-      <!-- Video Player -->
+      <!-- Video Player with CSS Subtitle Preview -->
       <div class="video-player-section">
-        <video
-          :key="videoKey"
-          controls
-          width="100%"
-          style="max-width: 720px; border-radius: 8px; background: #000"
-        >
-          <source :src="videoStreamSrc" type="video/mp4">
-          Your browser does not support the video tag.
-        </video>
+        <div class="video-container">
+          <video
+            :key="videoKey"
+            controls
+            width="100%"
+            style="max-width: 720px; border-radius: 8px; background: #000"
+          >
+            <source :src="videoStreamSrc" type="video/mp4">
+            Your browser does not support the video tag.
+          </video>
+          <div
+            v-if="showSubtitleEditor && previewEnabled"
+            class="subtitle-preview"
+            :style="previewStyle"
+          >
+            {{ previewText }}
+          </div>
+        </div>
       </div>
 
       <!-- Action Buttons -->
@@ -187,6 +240,18 @@ async function applySubtitleChanges() {
             </template>
 
             <el-form label-position="top" style="text-align: left">
+              <!-- Live Preview Controls -->
+              <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 16px">
+                <el-switch v-model="previewEnabled" active-text="Live Preview" />
+                <el-input
+                  v-if="previewEnabled"
+                  v-model="previewText"
+                  placeholder="Preview text"
+                  size="small"
+                  style="flex: 1"
+                />
+              </div>
+
               <!-- Style Preset -->
               <el-form-item label="Style Preset">
                 <el-select v-model="subtitleForm.style" @change="onStylePresetChange" style="width: 100%">
@@ -307,6 +372,19 @@ async function applySubtitleChanges() {
   display: flex;
   justify-content: center;
   margin: 24px 0;
+}
+
+.video-container {
+  position: relative;
+  display: inline-block;
+  max-width: 720px;
+  width: 100%;
+}
+
+.subtitle-preview {
+  pointer-events: none;
+  user-select: none;
+  z-index: 10;
 }
 
 .subtitle-editor {

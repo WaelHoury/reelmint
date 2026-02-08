@@ -26,6 +26,10 @@ soundfile
 python-dotenv
 tqdm
 
-# Optional (for Phase 2+)
-# aiohttp
-# pytest
+# Database
+alembic
+psycopg2-binary
+
+# Auth
+google-auth
+python-jose[cryptography]

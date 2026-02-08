@@ -1,6 +1,6 @@
 """Script generation and management API routes."""
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.schemas import (
     UpdateScriptRequest,
@@ -8,12 +8,14 @@ from app.api.schemas import (
 )
 from app.api.services.session_store import session_store
 from app.api.services.video_service import video_service
+from app.api.deps import get_current_user
+from app.db.models import User
 
 router = APIRouter(prefix="/sessions/{session_id}/script", tags=["scripts"])
 
 
 @router.post("", response_model=ScriptResponse)
-async def generate_script(session_id: str):
+async def generate_script(session_id: str, user: User = Depends(get_current_user)):
     """Generate or validate script for session.
 
     For prompt input: Generates narration via LLM
@@ -36,7 +38,7 @@ async def generate_script(session_id: str):
 
 
 @router.put("", response_model=ScriptResponse)
-async def update_script(session_id: str, request: UpdateScriptRequest):
+async def update_script(session_id: str, request: UpdateScriptRequest, user: User = Depends(get_current_user)):
     """Update/edit the session script."""
     session = session_store.get(session_id)
     if not session:
@@ -61,7 +63,7 @@ async def update_script(session_id: str, request: UpdateScriptRequest):
 
 
 @router.get("", response_model=ScriptResponse)
-async def get_script(session_id: str):
+async def get_script(session_id: str, user: User = Depends(get_current_user)):
     """Get current script for session."""
     session = session_store.get(session_id)
     if not session:
@@ -79,7 +81,7 @@ async def get_script(session_id: str):
 
 
 @router.post("/confirm", response_model=ScriptResponse)
-async def confirm_script(session_id: str):
+async def confirm_script(session_id: str, user: User = Depends(get_current_user)):
     """Confirm script is ready, advance to clips stage."""
     session = session_store.get(session_id)
     if not session:

@@ -1,5 +1,6 @@
 """FastAPI application for AI Video Maker API."""
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -9,7 +10,26 @@ from app.api.routes import (
     clips_router,
     videos_router,
     config_router,
+    auth_router,
+    library_router,
 )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Run database migrations on startup."""
+    from alembic.config import Config
+    from alembic import command
+    import os
+
+    alembic_cfg = Config(os.path.join(os.path.dirname(__file__), "..", "..", "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "..", "db", "migrations"))
+    try:
+        command.upgrade(alembic_cfg, "head")
+        print("Database migrations applied successfully.")
+    except Exception as e:
+        print(f"Warning: Could not run migrations: {e}")
+    yield
 
 # Create FastAPI app
 app = FastAPI(
@@ -18,6 +38,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # CORS middleware for frontend access
@@ -43,6 +64,8 @@ app.include_router(scripts_router, prefix="/api")
 app.include_router(clips_router, prefix="/api")
 app.include_router(videos_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
+app.include_router(library_router, prefix="/api")
 
 
 # Root endpoint

@@ -71,6 +71,9 @@ class VideoSession:
     final_audio_path: Optional[str] = None
     word_timestamps: Optional[List[Dict]] = None
 
+    # Auth
+    user_id: Optional[int] = None
+
     # Output
     output_path: Optional[str] = None
     credits_path: Optional[str] = None
@@ -113,6 +116,7 @@ class SessionStore:
         subtitles_enabled: bool = True,
         orientation: str = "landscape",
         narration_style: Optional[str] = None,
+        user_id: Optional[int] = None,
     ) -> VideoSession:
         """Create a new session.
 
@@ -168,6 +172,7 @@ class SessionStore:
             narration_style=narration_style,
             word_count=word_count,
             estimated_duration_seconds=estimated_duration,
+            user_id=user_id,
         )
 
         self._save(session)

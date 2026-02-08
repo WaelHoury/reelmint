@@ -335,6 +335,10 @@ def generate_video_task(session_id: str):
         session.current_step = "Complete!"
         session_store.update(session)
 
+        # Save completed video to PostgreSQL if user is authenticated
+        if session.user_id:
+            _save_video_to_db(session, output_path)
+
     except Exception as e:
         session.status = "failed"
         session.error_message = str(e)
@@ -471,6 +475,59 @@ def regenerate_subtitles(session: VideoSession, subtitle_settings: dict) -> Vide
     session_store.update(session)
 
     return session
+
+
+def _save_video_to_db(session, output_path):
+    """Save completed video metadata to PostgreSQL and generate thumbnail."""
+    from pathlib import Path
+    import subprocess
+
+    from app.db.base import SessionLocal
+    from app.db.models import Video
+
+    output_path = Path(output_path)
+    file_size = output_path.stat().st_size if output_path.exists() else None
+
+    # Generate thumbnail
+    thumb_filename = None
+    try:
+        thumb_path = output_path.with_suffix(".jpg")
+        subprocess.run(
+            [
+                settings.ffmpeg_path, "-i", str(output_path),
+                "-ss", "2", "-vframes", "1", "-vf", "scale=480:-1",
+                str(thumb_path), "-y",
+            ],
+            capture_output=True, timeout=30,
+        )
+        if thumb_path.exists():
+            thumb_filename = thumb_path.name
+    except Exception:
+        pass
+
+    db = SessionLocal()
+    try:
+        video = Video(
+            user_id=session.user_id,
+            title=session.title,
+            status="completed",
+            input_type=session.input_type,
+            prompt=session.prompt,
+            script_text=session.script_text,
+            narration_style=session.narration_style,
+            duration_seconds=session.duration_seconds,
+            orientation=session.orientation,
+            output_filename=output_path.name,
+            file_size_bytes=file_size,
+            thumbnail_filename=thumb_filename,
+        )
+        db.add(video)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"Warning: Failed to save video to database: {e}")
+    finally:
+        db.close()
 
 
 # Global video service instance
