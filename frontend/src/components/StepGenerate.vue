@@ -1,7 +1,10 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { startGeneration, getJobStatus, getVideoDownloadUrl, getVideoStreamUrl, updateSubtitles } from '../api'
+
+const router = useRouter()
 
 const props = defineProps({
   sessionId: { type: String, required: true },
@@ -219,9 +222,12 @@ async function applySubtitleChanges() {
       </div>
 
       <!-- Action Buttons -->
-      <div style="display: flex; gap: 12px; justify-content: center; margin-top: 20px">
+      <div style="display: flex; gap: 12px; justify-content: center; margin-top: 20px; flex-wrap: wrap">
         <el-button type="primary" size="large" @click="downloadVideo">
           <el-icon><Download /></el-icon> Download Video
+        </el-button>
+        <el-button type="success" size="large" @click="router.push(`/editor/session/${props.sessionId}`)">
+          <el-icon><Edit /></el-icon> Edit Video
         </el-button>
         <el-button size="large" @click="showSubtitleEditor = !showSubtitleEditor">
           <el-icon><EditPen /></el-icon> {{ showSubtitleEditor ? 'Hide' : 'Customize' }} Subtitles

@@ -26,6 +26,18 @@ const routes = [
     name: 'account',
     component: () => import('../views/AccountPage.vue'),
   },
+  {
+    path: '/editor/session/:sessionId',
+    name: 'editor-session',
+    component: () => import('../views/VideoEditorPage.vue'),
+    props: true,
+  },
+  {
+    path: '/editor/video/:videoId',
+    name: 'editor-video',
+    component: () => import('../views/VideoEditorPage.vue'),
+    props: true,
+  },
 ]
 
 const router = createRouter({

@@ -65,11 +65,17 @@ class VideoSession:
     subtitle_outline_color: Optional[str] = None
     subtitle_position: Optional[str] = None
 
-    # Intermediate files for subtitle re-generation
+    # Intermediate files for subtitle re-generation and editor
     temp_dir_path: Optional[str] = None
     video_no_audio_path: Optional[str] = None
     final_audio_path: Optional[str] = None
+    narration_audio_path: Optional[str] = None
+    music_file_path: Optional[str] = None
     word_timestamps: Optional[List[Dict]] = None
+    trimmed_clip_paths: Optional[List[str]] = None
+    clip_duration: Optional[float] = None
+    transition_duration: Optional[float] = None
+    project_dir_path: Optional[str] = None
 
     # Auth
     user_id: Optional[int] = None

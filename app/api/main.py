@@ -12,6 +12,7 @@ from app.api.routes import (
     config_router,
     auth_router,
     library_router,
+    editor_router,
 )
 
 
@@ -66,6 +67,7 @@ app.include_router(videos_router, prefix="/api")
 app.include_router(config_router, prefix="/api")
 app.include_router(auth_router, prefix="/api")
 app.include_router(library_router, prefix="/api")
+app.include_router(editor_router, prefix="/api")
 
 
 # Root endpoint

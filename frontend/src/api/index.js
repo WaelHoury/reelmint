@@ -147,4 +147,34 @@ export function getThumbnailUrl(videoId) {
   return `/api/videos/${videoId}/thumbnail?token=${_getToken()}`
 }
 
+// === Editor ===
+
+export function getSessionEditorData(sessionId) {
+  return api.get(`/sessions/${sessionId}/editor-data`)
+}
+
+export function getVideoEditorData(videoId) {
+  return api.get(`/videos/${videoId}/editor-data`)
+}
+
+export function renderSessionChanges(sessionId, payload) {
+  return api.put(`/sessions/${sessionId}/editor/render`, payload)
+}
+
+export function renderVideoChanges(videoId, payload) {
+  return api.put(`/videos/${videoId}/editor/render`, payload)
+}
+
+export function searchReplacementClips(keywords, orientation = 'landscape', count = 6) {
+  return api.post('/editor/search-clips', { keywords, orientation, count })
+}
+
+export function getSessionPreviewStreamUrl(sessionId) {
+  return `/api/sessions/${sessionId}/editor/preview-stream?token=${_getToken()}`
+}
+
+export function getVideoPreviewStreamUrl(videoId) {
+  return `/api/videos/${videoId}/editor/preview-stream?token=${_getToken()}`
+}
+
 export default api

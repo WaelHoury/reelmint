@@ -1,7 +1,10 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getMyVideos, deleteVideo, getLibraryStreamUrl, getLibraryDownloadUrl, getThumbnailUrl } from '../api'
+
+const router = useRouter()
 
 const videos = ref([])
 const total = ref(0)
@@ -129,6 +132,9 @@ onMounted(fetchVideos)
                 <span style="color: #909399; font-size: 12px">{{ formatDate(video.created_at) }}</span>
               </div>
               <div style="display: flex; gap: 8px; margin-top: 8px">
+                <el-button size="small" type="primary" plain @click.stop="router.push(`/editor/video/${video.id}`)">
+                  <el-icon><Edit /></el-icon>
+                </el-button>
                 <el-button size="small" @click.stop="downloadVideo(video)">
                   <el-icon><Download /></el-icon>
                 </el-button>

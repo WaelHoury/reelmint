@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     base_dir: Path = Path(__file__).parent.parent.parent
     output_dir: Path = Path("output")
     temp_dir: Path = Path("temp")
+    projects_dir: Path = Path("projects")
     cache_dir: Path = Path("cache")
     music_dir: Path = Path("music")
     models_dir: Path = Path("models")

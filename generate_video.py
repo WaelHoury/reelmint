@@ -372,6 +372,9 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         trimmed_videos = clip_results
 
+        # Save original trimmed clips BEFORE loop/outro modification (for editor persistence)
+        original_trimmed_videos = list(trimmed_videos)
+
         # Loop mode: replace last clip with a copy of the first clip
         if loop_mode and len(trimmed_videos) >= 2:
             print(f"\n  Loop mode: replacing last clip with first clip for seamless loop...")
@@ -424,6 +427,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         )
 
         # Add background music if enabled
+        music_file = None
         final_audio = narration_audio
         if os.getenv("ENABLE_BACKGROUND_MUSIC", "true").lower() == "true":
             print("  Mixing background music...")
@@ -559,13 +563,18 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             fade_duration=fade_dur,
         )
 
-        # Save intermediate data for subtitle re-generation
+        # Save intermediate data for subtitle re-generation and editor
         if intermediate_callback:
             intermediate_callback({
                 'temp_dir': str(temp_dir),
                 'video_no_audio': str(video_no_audio),
                 'final_audio': str(final_audio),
+                'narration_audio': str(narration_audio),
+                'music_file': str(music_file) if music_file else None,
                 'word_timestamps': word_timestamps,
+                'trimmed_clips': [str(p) for p in original_trimmed_videos],
+                'clip_duration': clip_duration,
+                'transition_duration': transition_duration,
             })
 
         # Generate credits

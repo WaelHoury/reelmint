@@ -1,6 +1,8 @@
 """Video generation service for API."""
 
+import json
 import os
+import shutil
 from pathlib import Path
 from typing import Dict, List, Optional
 from rq import Queue
@@ -305,12 +307,17 @@ def generate_video_task(session_id: str):
             session.current_step = step
             session_store.update(session)
 
-        # Intermediate callback to save file paths for subtitle re-generation
+        # Intermediate callback to save file paths for editor and subtitle re-generation
         def _save_intermediates(data):
             session.temp_dir_path = data.get('temp_dir')
             session.video_no_audio_path = data.get('video_no_audio')
             session.final_audio_path = data.get('final_audio')
+            session.narration_audio_path = data.get('narration_audio')
+            session.music_file_path = data.get('music_file')
             session.word_timestamps = data.get('word_timestamps')
+            session.trimmed_clip_paths = data.get('trimmed_clips')
+            session.clip_duration = data.get('clip_duration')
+            session.transition_duration = data.get('transition_duration')
             session_store.update(session)
 
         # Generate video using existing function
@@ -337,13 +344,53 @@ def generate_video_task(session_id: str):
 
         # Save completed video to PostgreSQL if user is authenticated
         if session.user_id:
-            _save_video_to_db(session, output_path)
+            video_id = _save_video_to_db(session, output_path)
+
+            # Persist intermediate files for the video editor
+            if video_id:
+                project_dir = _persist_project_files(session, output_path, video_id)
+                if project_dir:
+                    # Update session with persistent paths
+                    session.project_dir_path = str(project_dir)
+                    session.video_no_audio_path = str(project_dir / "video_no_audio.mp4")
+                    session.final_audio_path = str(project_dir / "audio_final.wav")
+                    session.narration_audio_path = str(project_dir / "narration.wav")
+                    session_store.update(session)
 
     except Exception as e:
         session.status = "failed"
         session.error_message = str(e)
         session_store.update(session)
         raise
+
+
+def _find_project_dir(session):
+    """Find the project directory for a session, checking session field and DB."""
+    if session.project_dir_path:
+        project_dir = Path(session.project_dir_path)
+        if project_dir.exists():
+            return project_dir
+
+    # Try to find via DB video record
+    if session.user_id:
+        from app.db.base import SessionLocal
+        from app.db.models import Video
+        db = SessionLocal()
+        try:
+            video = db.query(Video).filter(
+                Video.user_id == session.user_id,
+                Video.output_filename == Path(session.output_path).name if session.output_path else ""
+            ).first()
+            if video and video.project_data_path:
+                project_dir = Path(video.project_data_path)
+                if project_dir.exists():
+                    return project_dir
+        except Exception:
+            pass
+        finally:
+            db.close()
+
+    return None
 
 
 def regenerate_subtitles(session: VideoSession, subtitle_settings: dict) -> VideoSession:
@@ -370,6 +417,22 @@ def regenerate_subtitles(session: VideoSession, subtitle_settings: dict) -> Vide
     video_no_audio = Path(session.video_no_audio_path)
     final_audio = Path(session.final_audio_path)
     temp_dir = Path(session.temp_dir_path) if session.temp_dir_path else video_no_audio.parent
+
+    # Fallback to project directory if temp files are gone
+    if not video_no_audio.exists() or not final_audio.exists():
+        project_dir = _find_project_dir(session)
+        if project_dir:
+            project_json = project_dir / "project.json"
+            if project_json.exists():
+                with open(project_json, "r") as f:
+                    project = json.load(f)
+                vna = project.get("output", {}).get("video_no_audio")
+                af = project.get("audio", {}).get("mixed_file") or project.get("audio", {}).get("narration_file")
+                if vna:
+                    video_no_audio = project_dir / vna
+                if af:
+                    final_audio = project_dir / af
+                temp_dir = project_dir
 
     if not video_no_audio.exists() or not final_audio.exists():
         raise ValueError("Intermediate video/audio files no longer exist on disk")
@@ -478,7 +541,11 @@ def regenerate_subtitles(session: VideoSession, subtitle_settings: dict) -> Vide
 
 
 def _save_video_to_db(session, output_path):
-    """Save completed video metadata to PostgreSQL and generate thumbnail."""
+    """Save completed video metadata to PostgreSQL and generate thumbnail.
+
+    Returns:
+        Video ID (int) or None if save failed.
+    """
     from pathlib import Path
     import subprocess
 
@@ -523,11 +590,168 @@ def _save_video_to_db(session, output_path):
         )
         db.add(video)
         db.commit()
+        db.refresh(video)
+        return video.id
     except Exception as e:
         db.rollback()
         print(f"Warning: Failed to save video to database: {e}")
+        return None
     finally:
         db.close()
+
+
+def _persist_project_files(session, output_path, video_id):
+    """Copy intermediate files to persistent projects/ directory and write project.json.
+
+    Args:
+        session: VideoSession with intermediate file paths
+        output_path: Path to the final video
+        video_id: Database video ID (used as project directory name)
+
+    Returns:
+        Path to the project directory, or None if persistence failed.
+    """
+    try:
+        project_dir = Path(settings.projects_dir) / str(video_id)
+        project_dir.mkdir(parents=True, exist_ok=True)
+        clips_dir = project_dir / "clips"
+        clips_dir.mkdir(exist_ok=True)
+
+        # Copy video_no_audio
+        video_no_audio_dest = None
+        if session.video_no_audio_path and Path(session.video_no_audio_path).exists():
+            video_no_audio_dest = project_dir / "video_no_audio.mp4"
+            shutil.copy2(session.video_no_audio_path, video_no_audio_dest)
+
+        # Copy narration audio
+        narration_dest = None
+        if session.narration_audio_path and Path(session.narration_audio_path).exists():
+            narration_dest = project_dir / "narration.wav"
+            shutil.copy2(session.narration_audio_path, narration_dest)
+
+        # Copy final audio (mixed with music) — only if different from narration
+        audio_final_dest = None
+        has_bg_music = (
+            session.final_audio_path is not None
+            and session.narration_audio_path is not None
+            and session.final_audio_path != session.narration_audio_path
+        )
+        if has_bg_music and Path(session.final_audio_path).exists():
+            audio_final_dest = project_dir / "audio_final.wav"
+            shutil.copy2(session.final_audio_path, audio_final_dest)
+        elif narration_dest:
+            # No separate mixed file — use narration as the final audio
+            audio_final_dest = narration_dest
+
+        # Copy background music file for re-mixing in editor
+        music_file_dest = None
+        if session.music_file_path and Path(session.music_file_path).exists():
+            music_ext = Path(session.music_file_path).suffix or ".mp3"
+            music_file_dest = project_dir / f"background_music{music_ext}"
+            shutil.copy2(session.music_file_path, music_file_dest)
+
+        # Copy individual trimmed clips
+        clip_files = []
+        if session.trimmed_clip_paths:
+            for i, clip_path in enumerate(session.trimmed_clip_paths):
+                src = Path(clip_path)
+                if src.exists():
+                    dest = clips_dir / f"clip_{i}.mp4"
+                    shutil.copy2(src, dest)
+                    clip_files.append(f"clips/clip_{i}.mp4")
+                else:
+                    clip_files.append(None)
+
+        # Copy subtitles if they exist in temp dir
+        subtitle_dest = None
+        if session.temp_dir_path:
+            for sub_name in ["subtitles_custom.ass", "subtitles.ass"]:
+                sub_src = Path(session.temp_dir_path) / sub_name
+                if sub_src.exists():
+                    subtitle_dest = project_dir / "subtitles.ass"
+                    shutil.copy2(sub_src, subtitle_dest)
+                    break
+
+        # Build project manifest
+        project_data = {
+            "version": 1,
+            "video_id": video_id,
+            "session_id": session.session_id,
+            "title": session.title,
+            "orientation": session.orientation,
+            "duration_seconds": session.duration_seconds,
+            "input_type": session.input_type,
+            "prompt": session.prompt,
+            "script_text": session.script_text,
+            "narration_style": session.narration_style,
+            "loop_mode": session.loop_mode,
+            "transition_duration": session.transition_duration or float(os.getenv("TRANSITION_DURATION", "0.5")),
+            "word_timestamps": session.word_timestamps,
+            "clips": [],
+            "audio": {
+                "narration_file": "narration.wav" if narration_dest else None,
+                "mixed_file": "audio_final.wav" if has_bg_music and audio_final_dest else None,
+                "music_file": music_file_dest.name if music_file_dest else None,
+                "music_volume": float(os.getenv("MUSIC_VOLUME", "0.15")),
+                "narration_volume": 1.0,
+                "has_background_music": has_bg_music,
+            },
+            "subtitles": {
+                "enabled": session.subtitles_enabled,
+                "style": session.subtitle_style or os.getenv("SUBTITLE_STYLE", "youtube"),
+                "font": session.subtitle_font or "Arial",
+                "font_size": session.subtitle_font_size or 52,
+                "color": session.subtitle_color or "#FFFFFF",
+                "outline_color": session.subtitle_outline_color or "#000000",
+                "position": session.subtitle_position or "bottom",
+                "file": "subtitles.ass" if subtitle_dest else None,
+            },
+            "output": {
+                "video_no_audio": "video_no_audio.mp4" if video_no_audio_dest else None,
+                "final_video": Path(output_path).name,
+            },
+        }
+
+        # Add clip metadata
+        for i, clip_dict in enumerate(session.clips or []):
+            clip_entry = {
+                "index": i,
+                "keywords": clip_dict.get("keywords", []),
+                "visual_description": clip_dict.get("visual_description", ""),
+                "video_id": clip_dict.get("video_id"),
+                "author": clip_dict.get("author"),
+                "author_url": clip_dict.get("author_url"),
+                "duration_seconds": session.clip_duration or clip_dict.get("duration_seconds"),
+                "file": clip_files[i] if i < len(clip_files) else None,
+                "trim_start": 0,
+                "trim_end": 0,
+            }
+            project_data["clips"].append(clip_entry)
+
+        # Write project.json
+        project_json_path = project_dir / "project.json"
+        with open(project_json_path, "w", encoding="utf-8") as f:
+            json.dump(project_data, f, indent=2, ensure_ascii=False)
+
+        # Update DB with project path
+        from app.db.base import SessionLocal
+        from app.db.models import Video
+        db = SessionLocal()
+        try:
+            video = db.query(Video).filter(Video.id == video_id).first()
+            if video:
+                video.project_data_path = str(project_dir)
+                db.commit()
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+
+        return project_dir
+
+    except Exception as e:
+        print(f"Warning: Failed to persist project files: {e}")
+        return None
 
 
 # Global video service instance

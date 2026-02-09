@@ -37,6 +37,7 @@ class Video(Base):
     output_filename = Column(String(512), nullable=False)
     file_size_bytes = Column(BigInteger, nullable=True)
     thumbnail_filename = Column(String(512), nullable=True)
+    project_data_path = Column(String(512), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="videos")
