@@ -98,12 +98,12 @@ async function handleConfirm() {
 
 <template>
   <div>
-    <h2 style="margin-bottom: 24px">Review Visual Clips</h2>
+    <h2 class="step-title">Review Visual Clips</h2>
 
     <!-- Loading -->
-    <div v-if="loading" style="text-align: center; padding: 48px 0">
-      <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-      <p style="margin-top: 12px; color: #909399">Generating visual clips and searching for videos...</p>
+    <div v-if="loading" class="loading-state">
+      <el-icon class="is-loading" :size="32" color="var(--ce-purple-light)"><Loading /></el-icon>
+      <p class="loading-text">Generating visual clips and searching for videos...</p>
     </div>
 
     <!-- Clips list -->
@@ -118,27 +118,24 @@ async function handleConfirm() {
       </el-alert>
 
       <div class="clips-grid">
-        <el-card
+        <div
           v-for="clip in clips"
           :key="clip.index"
-          class="clip-card"
-          shadow="hover"
+          class="clip-card glass-card"
         >
           <!-- Clip header -->
-          <template #header>
-            <div class="clip-header">
-              <span class="clip-number">Clip {{ clip.index + 1 }}</span>
-              <el-button
-                v-if="editingClip !== clip.index"
-                text
-                type="primary"
-                size="small"
-                @click="startEditClip(clip)"
-              >
-                <el-icon><Edit /></el-icon> Edit
-              </el-button>
-            </div>
-          </template>
+          <div class="clip-header">
+            <span class="clip-number">Clip {{ clip.index + 1 }}</span>
+            <el-button
+              v-if="editingClip !== clip.index"
+              text
+              type="primary"
+              size="small"
+              @click="startEditClip(clip)"
+            >
+              <el-icon><Edit /></el-icon> Edit
+            </el-button>
+          </div>
 
           <!-- View mode -->
           <div v-if="editingClip !== clip.index">
@@ -196,7 +193,7 @@ async function handleConfirm() {
                   placeholder="e.g. ocean, waves, sunset"
                 />
               </el-form-item>
-              <div style="display: flex; gap: 8px; justify-content: flex-end">
+              <div class="edit-actions">
                 <el-button size="small" @click="cancelEdit">Cancel</el-button>
                 <el-button
                   type="primary"
@@ -209,11 +206,11 @@ async function handleConfirm() {
               </div>
             </el-form>
           </div>
-        </el-card>
+        </div>
       </div>
 
       <!-- Actions -->
-      <div class="actions" style="margin-top: 24px">
+      <div class="actions">
         <el-button @click="emit('back')">
           <el-icon><ArrowLeft /></el-icon> Back to Script
         </el-button>
@@ -234,6 +231,23 @@ async function handleConfirm() {
 </template>
 
 <style scoped>
+.step-title {
+  margin-bottom: 24px;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ce-text-primary);
+}
+
+.loading-state {
+  text-align: center;
+  padding: 48px 0;
+}
+
+.loading-text {
+  margin-top: 12px;
+  color: var(--ce-text-muted);
+}
+
 .clips-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -241,6 +255,7 @@ async function handleConfirm() {
 }
 
 .clip-card {
+  padding: 20px;
   overflow: hidden;
 }
 
@@ -248,19 +263,21 @@ async function handleConfirm() {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-bottom: 12px;
 }
 
 .clip-number {
   font-weight: 600;
   font-size: 14px;
+  color: var(--ce-text-primary);
 }
 
 .clip-preview {
   width: 100%;
   aspect-ratio: 16/9;
-  border-radius: 4px;
+  border-radius: 8px;
   overflow: hidden;
-  background: #f5f7fa;
+  background: #111;
   margin-bottom: 12px;
 }
 
@@ -275,13 +292,13 @@ async function handleConfirm() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #c0c4cc;
+  color: var(--ce-text-muted);
   gap: 8px;
 }
 
 .clip-description {
   font-size: 13px;
-  color: #606266;
+  color: var(--ce-text-secondary);
   margin-bottom: 8px;
   line-height: 1.5;
 }
@@ -295,12 +312,19 @@ async function handleConfirm() {
 
 .clip-author {
   font-size: 11px;
-  color: #c0c4cc;
+  color: var(--ce-text-muted);
+}
+
+.edit-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .actions {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-top: 24px;
 }
 </style>

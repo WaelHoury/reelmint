@@ -1,12 +1,27 @@
 <script setup>
-import { computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { isAuthenticated, currentUser, logout } from './stores/auth'
+import AppSidebar from './components/AppSidebar.vue'
 
 const route = useRoute()
 const router = useRouter()
 
+const sidebarCollapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
+
+watch(sidebarCollapsed, (val) => {
+  localStorage.setItem('sidebar_collapsed', String(val))
+})
+
 const isLoginPage = computed(() => route.path === '/login')
+const isEditorPage = computed(() => route.path.startsWith('/editor/'))
+const showSidebar = computed(() => !isLoginPage.value && !isEditorPage.value)
+
+const mainStyle = computed(() => ({
+  marginLeft: sidebarCollapsed.value
+    ? 'var(--ce-sidebar-collapsed)'
+    : 'var(--ce-sidebar-expanded)',
+}))
 
 function handleLogout() {
   logout()
@@ -19,137 +34,40 @@ function handleLogout() {
     <!-- Login page: full-screen, no sidebar -->
     <router-view v-if="isLoginPage" />
 
+    <!-- Editor page: full-screen, no sidebar -->
+    <router-view v-else-if="isEditorPage" />
+
     <!-- Authenticated layout with sidebar -->
-    <el-container v-else class="app-container">
-      <el-aside width="220px" class="app-aside">
-        <div class="sidebar-logo">
-          <el-icon :size="24" color="#409eff"><VideoCamera /></el-icon>
-          <span>AI Video Maker</span>
-        </div>
-
-        <el-menu
-          :default-active="route.path"
-          router
-          class="sidebar-menu"
-        >
-          <el-menu-item index="/create">
-            <el-icon><Plus /></el-icon>
-            <span>Create Video</span>
-          </el-menu-item>
-          <el-menu-item index="/videos">
-            <el-icon><Film /></el-icon>
-            <span>My Videos</span>
-          </el-menu-item>
-          <el-menu-item index="/account">
-            <el-icon><User /></el-icon>
-            <span>Account</span>
-          </el-menu-item>
-        </el-menu>
-
-        <div class="sidebar-footer">
-          <el-button text type="danger" @click="handleLogout" style="width: 100%">
-            <el-icon><SwitchButton /></el-icon>
-            Logout
-          </el-button>
-        </div>
-      </el-aside>
-
-      <el-container>
-        <el-header class="app-header">
-          <div class="header-user" v-if="currentUser">
-            <el-avatar :size="32" :src="currentUser.picture_url">
-              <el-icon><User /></el-icon>
-            </el-avatar>
-            <span class="header-name">{{ currentUser.name }}</span>
-          </div>
-        </el-header>
-        <el-main class="app-main">
+    <div v-else class="app-layout">
+      <AppSidebar
+        v-if="showSidebar"
+        v-model:collapsed="sidebarCollapsed"
+        @logout="handleLogout"
+      />
+      <main class="app-main" :style="mainStyle">
+        <transition name="fade" mode="out-in">
           <router-view />
-        </el-main>
-      </el-container>
-    </el-container>
+        </transition>
+      </main>
+    </div>
   </el-config-provider>
 </template>
 
 <style>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', Arial, sans-serif;
-  background-color: #f5f7fa;
-  color: #303133;
-}
-
-.app-container {
+/* Minimal global styles — theme.css handles base + Element Plus overrides */
+.app-layout {
   min-height: 100vh;
 }
 
-.app-aside {
-  background: #fff;
-  border-right: 1px solid #e4e7ed;
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-  position: fixed;
-  left: 0;
-  top: 0;
-  z-index: 100;
-}
-
-.sidebar-logo {
-  height: 60px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 20px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #303133;
-  border-bottom: 1px solid #e4e7ed;
-}
-
-.sidebar-menu {
-  flex: 1;
-  border-right: none;
-}
-
-.sidebar-footer {
-  padding: 12px 16px;
-  border-top: 1px solid #e4e7ed;
-}
-
-/* Offset main content for fixed sidebar */
-.app-container > .el-container {
-  margin-left: 220px;
-}
-
-.app-header {
-  background: #fff;
-  border-bottom: 1px solid #e4e7ed;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  height: 60px;
-  padding: 0 24px;
-}
-
-.header-user {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.header-name {
-  font-size: 14px;
-  color: #606266;
-}
-
 .app-main {
-  padding: 24px;
-  max-width: 1200px;
+  padding: 32px 40px;
+  transition: margin-left var(--ce-transition-normal);
+  min-height: 100vh;
+}
+
+@media (max-width: 768px) {
+  .app-main {
+    padding: 20px 16px;
+  }
 }
 </style>

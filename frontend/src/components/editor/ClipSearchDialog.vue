@@ -129,16 +129,16 @@ function confirmSelection() {
   border: 2px solid transparent;
   cursor: pointer;
   transition: border-color 0.2s;
-  background: #f5f5f5;
+  background: #111;
 }
 
 .result-card:hover {
-  border-color: #409eff88;
+  border-color: rgba(167, 139, 250, 0.5);
 }
 
 .result-card.selected {
-  border-color: #409eff;
-  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.2);
+  border-color: #A78BFA;
+  box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.2);
 }
 
 .result-video {

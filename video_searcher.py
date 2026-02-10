@@ -110,6 +110,23 @@ class VideoSearcher:
             'Authorization': api_key
         }
 
+    def get_video_by_id(self, video_id: str) -> Optional[VideoInfo]:
+        """Fetch a single video by its Pexels ID.
+
+        Args:
+            video_id: Pexels video ID
+
+        Returns:
+            VideoInfo object, or None if not found
+        """
+        url = f"https://api.pexels.com/videos/videos/{video_id}"
+        try:
+            response = requests.get(url, headers=self.headers, timeout=10)
+            response.raise_for_status()
+            return VideoInfo(response.json())
+        except requests.RequestException:
+            return None
+
     def search(self, keywords: List[str], min_duration: float = 5.0,
                max_results: int = 20,
                orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[VideoInfo]:

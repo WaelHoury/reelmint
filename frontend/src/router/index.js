@@ -9,12 +9,24 @@ const routes = [
   },
   {
     path: '/',
-    redirect: '/create',
+    name: 'home',
+    component: () => import('../views/HomePage.vue'),
+  },
+  {
+    path: '/create/shorts',
+    name: 'create-shorts',
+    component: () => import('../views/VideoWizard.vue'),
+    props: { mode: 'shorts' },
+  },
+  {
+    path: '/create/longform',
+    name: 'create-longform',
+    component: () => import('../views/VideoWizard.vue'),
+    props: { mode: 'longform' },
   },
   {
     path: '/create',
-    name: 'create',
-    component: () => import('../views/VideoWizard.vue'),
+    redirect: '/',
   },
   {
     path: '/videos',
@@ -51,7 +63,7 @@ router.beforeEach((to, from, next) => {
   if (!to.meta.public && !token) {
     next('/login')
   } else if (to.path === '/login' && token) {
-    next('/create')
+    next('/')
   } else {
     next()
   }

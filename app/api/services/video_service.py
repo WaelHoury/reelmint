@@ -334,6 +334,7 @@ def generate_video_task(session_id: str):
             progress_callback=_update_progress,
             narration_style=session.narration_style,
             intermediate_callback=_save_intermediates,
+            pre_selected_clips=session.clips if session.clips else None,
         )
 
         session.status = "completed"

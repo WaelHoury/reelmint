@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { googleLogin } from '../api'
@@ -17,7 +17,7 @@ function initGoogleSignIn() {
     })
     window.google.accounts.id.renderButton(
       document.getElementById('google-signin-btn'),
-      { theme: 'outline', size: 'large', width: 320, text: 'signin_with' }
+      { theme: 'filled_black', size: 'large', width: 320, text: 'signin_with' }
     )
   }
 }
@@ -27,7 +27,7 @@ async function handleCredentialResponse(response) {
   try {
     const { data } = await googleLogin(response.credential)
     setAuth(data.access_token, data.user)
-    router.push('/create')
+    router.push('/')
   } catch (err) {
     ElMessage.error(err.response?.data?.detail || 'Login failed')
   } finally {
@@ -50,17 +50,18 @@ function loadGoogleScript() {
   document.head.appendChild(script)
 }
 
-import { onMounted } from 'vue'
 onMounted(loadGoogleScript)
 </script>
 
 <template>
   <div class="login-page">
-    <el-card class="login-card" shadow="always">
+    <div class="login-card glass-card">
       <div class="login-header">
-        <el-icon :size="48" color="#409eff"><VideoCamera /></el-icon>
-        <h1>AI Video Maker</h1>
-        <p>Create stunning videos with AI</p>
+        <div class="login-icon">
+          <el-icon :size="40" color="var(--ce-purple-light)"><VideoCamera /></el-icon>
+        </div>
+        <h1 class="login-title">Clipra<span class="ce-gradient-text">.AI</span></h1>
+        <p class="login-subtitle">Create stunning videos with AI</p>
       </div>
       <div class="login-body">
         <div id="google-signin-btn" v-show="!loading"></div>
@@ -68,7 +69,7 @@ onMounted(loadGoogleScript)
           Signing in...
         </el-button>
       </div>
-    </el-card>
+    </div>
   </div>
 </template>
 
@@ -78,28 +79,55 @@ onMounted(loadGoogleScript)
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  position: relative;
+}
+
+/* Additional glow for login page */
+.login-page::before {
+  content: '';
+  position: absolute;
+  width: 600px;
+  height: 600px;
+  background: radial-gradient(circle, rgba(167, 139, 250, 0.12) 0%, transparent 70%);
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -60%);
+  pointer-events: none;
 }
 
 .login-card {
   width: 420px;
-  padding: 20px;
-  border-radius: 12px;
+  padding: 40px 36px;
+  position: relative;
+  z-index: 1;
 }
 
 .login-header {
   text-align: center;
-  margin-bottom: 32px;
+  margin-bottom: 36px;
 }
 
-.login-header h1 {
-  margin: 12px 0 4px;
-  font-size: 24px;
-  color: #303133;
+.login-icon {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: rgba(167, 139, 250, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
 }
 
-.login-header p {
-  color: #909399;
+.login-title {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--ce-text-primary);
+  margin: 0 0 8px;
+  letter-spacing: -0.5px;
+}
+
+.login-subtitle {
+  color: var(--ce-text-muted);
   font-size: 14px;
 }
 
