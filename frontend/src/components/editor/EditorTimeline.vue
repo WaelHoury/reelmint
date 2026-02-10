@@ -59,7 +59,7 @@
               :label="clip.keywords?.join(', ') || `Clip ${clip.index + 1}`"
               :zoom="zoom"
               :selected="selected?.type === 'clip' && selected?.index === clip.index"
-              color="#409eff"
+              color="#A78BFA"
               :trimmable="true"
               :trim-start="clip.trim_start || 0"
               :trim-end="clip.trim_end || 0"

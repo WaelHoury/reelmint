@@ -1,6 +1,9 @@
 """Session management API routes."""
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
 from app.api.schemas import (
     CreateSessionRequest,
@@ -10,17 +13,47 @@ from app.api.schemas import (
 )
 from app.api.services.session_store import session_store
 from app.api.deps import get_current_user
-from app.db.models import User
+from app.db.base import get_db
+from app.db.models import User, Video
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
+def _normalize_title(title: str) -> str:
+    """Normalize title for duplicate detection and storage."""
+    return re.sub(r"\s+", " ", title.strip())
+
+
+def _normalize_title_key(title: str) -> str:
+    """Normalize title for case-insensitive comparisons."""
+    return _normalize_title(title).casefold()
+
+
 @router.post("", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
-async def create_session(request: CreateSessionRequest, user: User = Depends(get_current_user)):
+async def create_session(
+    request: CreateSessionRequest,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """Create a new video generation session."""
+    normalized_title = _normalize_title(request.title)
+    normalized_title_key = _normalize_title_key(request.title)
+
+    existing_videos = db.query(Video).filter(Video.user_id == user.id).all()
+    for video in existing_videos:
+        if _normalize_title_key(video.title) == normalized_title_key:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "DUPLICATE_TITLE",
+                    "field": "title",
+                    "message": "A video with this title already exists. Choose a different title.",
+                },
+            )
+
     try:
         session = session_store.create(
-            title=request.title,
+            title=normalized_title,
             input_type=request.input_type,
             prompt=request.prompt,
             script_text=request.script,

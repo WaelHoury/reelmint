@@ -1,12 +1,19 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { createSession, getStyles } from '../api'
+
+const props = defineProps({
+  mode: { type: String, default: 'longform' },
+})
 
 const emit = defineEmits(['created'])
 
 const loading = ref(false)
 const styles = ref([])
+const titleError = ref('')
+
+const isShorts = computed(() => props.mode === 'shorts')
 
 const form = ref({
   title: '',
@@ -21,12 +28,30 @@ const form = ref({
   orientation: 'landscape',
 })
 
+// Set defaults based on mode
+watch(() => props.mode, (mode) => {
+  if (mode === 'shorts') {
+    form.value.orientation = 'portrait'
+    form.value.durationSeconds = 30
+    form.value.durationUnit = 'seconds'
+  } else {
+    form.value.orientation = 'landscape'
+    form.value.durationSeconds = 60
+    form.value.durationUnit = 'seconds'
+  }
+}, { immediate: true })
+
+watch(() => form.value.title, () => {
+  if (titleError.value) {
+    titleError.value = ''
+  }
+})
+
 onMounted(async () => {
   try {
     const { data } = await getStyles()
     styles.value = data.styles
   } catch {
-    // Fallback styles if API unavailable
     styles.value = [
       { id: 'viral', name: 'Viral', description: 'Hook viewers with punchy facts' },
       { id: 'informative', name: 'Informative', description: 'Expert teacher who makes complex topics simple' },
@@ -36,6 +61,30 @@ onMounted(async () => {
       { id: 'creative', name: 'Creative', description: 'Curious overthinker having a late-night epiphany' },
     ]
   }
+})
+
+const orientationOptions = computed(() => {
+  if (isShorts.value) {
+    return [
+      { value: 'portrait', label: 'Portrait', icon: 'Iphone' },
+      { value: 'square', label: 'Square', icon: 'Grid' },
+    ]
+  }
+  return [
+    { value: 'landscape', label: 'Landscape', icon: 'Monitor' },
+    { value: 'portrait', label: 'Portrait', icon: 'Iphone' },
+    { value: 'square', label: 'Square', icon: 'Grid' },
+  ]
+})
+
+const durationMin = computed(() => isShorts.value ? 15 : 10)
+const durationMax = computed(() => {
+  if (isShorts.value) return 60
+  return form.value.durationUnit === 'minutes' ? 10 : 600
+})
+const durationStep = computed(() => {
+  if (isShorts.value) return 5
+  return form.value.durationUnit === 'minutes' ? 0.5 : 10
 })
 
 const durationInSeconds = computed(() => {
@@ -55,6 +104,7 @@ const canSubmit = computed(() => {
 async function handleSubmit() {
   if (!canSubmit.value) return
 
+  titleError.value = ''
   loading.value = true
   try {
     const payload = {
@@ -71,7 +121,6 @@ async function handleSubmit() {
       payload.narration_style = form.value.narrationStyle
     } else {
       payload.script = form.value.script.trim()
-      // Duration is auto-calculated from script word count
       if (form.value.durationSeconds) {
         payload.duration_seconds = durationInSeconds.value
       }
@@ -80,7 +129,13 @@ async function handleSubmit() {
     const { data } = await createSession(payload)
     emit('created', data)
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to create session')
+    const detail = err.response?.data?.detail
+    if (err.response?.status === 409 && detail?.code === 'DUPLICATE_TITLE') {
+      titleError.value = detail.message || 'A video with this title already exists. Choose a different title.'
+      return
+    }
+    const message = typeof detail === 'string' ? detail : detail?.message
+    ElMessage.error(message || 'Failed to create session')
   } finally {
     loading.value = false
   }
@@ -89,11 +144,11 @@ async function handleSubmit() {
 
 <template>
   <div>
-    <h2 style="margin-bottom: 24px">Video Settings</h2>
+    <h2 class="step-title">Video Settings</h2>
 
     <el-form label-position="top" @submit.prevent="handleSubmit">
       <!-- Title -->
-      <el-form-item label="Video Title">
+      <el-form-item label="Project Title" :error="titleError">
         <el-input
           v-model="form.title"
           placeholder="e.g. How Bees Make Honey"
@@ -133,9 +188,9 @@ async function handleSubmit() {
             :value="style.id"
             :label="style.name"
           >
-            <div style="display: flex; flex-direction: column; padding: 4px 0">
-              <span style="font-weight: 600">{{ style.name }}</span>
-              <span style="font-size: 12px; color: #909399; line-height: 1.4">{{ style.description }}</span>
+            <div class="style-option">
+              <span class="style-name">{{ style.name }}</span>
+              <span class="style-desc">{{ style.description }}</span>
             </div>
           </el-option>
         </el-select>
@@ -156,17 +211,22 @@ async function handleSubmit() {
 
       <!-- Duration -->
       <el-form-item label="Duration">
-        <div style="display: flex; gap: 12px; align-items: center">
+        <div class="duration-row">
           <el-input-number
             v-model="form.durationSeconds"
-            :min="10"
-            :max="form.durationUnit === 'minutes' ? 10 : 600"
-            :step="form.durationUnit === 'minutes' ? 0.5 : 10"
+            :min="durationMin"
+            :max="durationMax"
+            :step="durationStep"
           />
-          <el-select v-model="form.durationUnit" style="width: 120px">
+          <el-select
+            v-if="!isShorts"
+            v-model="form.durationUnit"
+            style="width: 120px"
+          >
             <el-option label="Seconds" value="seconds" />
             <el-option label="Minutes" value="minutes" />
           </el-select>
+          <span v-else class="helper-text" style="margin-top: 0">seconds</span>
         </div>
         <div class="helper-text" v-if="form.inputType === 'script'">
           Optional for scripts — duration is auto-calculated from word count if not set
@@ -176,21 +236,19 @@ async function handleSubmit() {
       <!-- Orientation -->
       <el-form-item label="Orientation">
         <el-radio-group v-model="form.orientation">
-          <el-radio-button value="landscape">
-            <el-icon><Monitor /></el-icon> Landscape
-          </el-radio-button>
-          <el-radio-button value="portrait">
-            <el-icon><Iphone /></el-icon> Portrait
-          </el-radio-button>
-          <el-radio-button value="square">
-            <el-icon><Grid /></el-icon> Square
+          <el-radio-button
+            v-for="opt in orientationOptions"
+            :key="opt.value"
+            :value="opt.value"
+          >
+            <el-icon><component :is="opt.icon" /></el-icon> {{ opt.label }}
           </el-radio-button>
         </el-radio-group>
       </el-form-item>
 
       <!-- Options Row -->
       <el-form-item label="Options">
-        <div style="display: flex; gap: 24px">
+        <div class="options-row">
           <el-checkbox v-model="form.subtitlesEnabled">Subtitles</el-checkbox>
           <el-checkbox v-model="form.loopMode">Loop Mode</el-checkbox>
         </div>
@@ -198,25 +256,66 @@ async function handleSubmit() {
 
       <!-- Submit -->
       <el-form-item>
-        <el-button
-          type="primary"
-          size="large"
-          :loading="loading"
-          :disabled="!canSubmit"
+        <button
+          type="button"
+          class="btn-primary-glow submit-btn"
+          :disabled="!canSubmit || loading"
           @click="handleSubmit"
         >
-          Create Session & Continue
-          <el-icon class="el-icon--right"><ArrowRight /></el-icon>
-        </el-button>
+          <el-icon v-if="loading" class="is-loading"><Loading /></el-icon>
+          <el-icon v-else><ArrowRight /></el-icon>
+          {{ loading ? 'Creating...' : 'Create Session & Continue' }}
+        </button>
       </el-form-item>
     </el-form>
   </div>
 </template>
 
 <style scoped>
+.step-title {
+  margin-bottom: 24px;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ce-text-primary);
+}
+
 .helper-text {
   font-size: 12px;
-  color: #909399;
+  color: var(--ce-text-muted);
   margin-top: 4px;
+}
+
+.duration-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.options-row {
+  display: flex;
+  gap: 24px;
+}
+
+.style-option {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+
+.style-name {
+  font-weight: 600;
+  color: var(--ce-text-primary);
+}
+
+.style-desc {
+  font-size: 12px;
+  color: var(--ce-text-muted);
+  line-height: 1.4;
+}
+
+.submit-btn {
+  width: 100%;
+  padding: 16px;
+  font-size: 15px;
 }
 </style>

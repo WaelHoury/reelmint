@@ -96,12 +96,12 @@ function onScriptInput() {
 
 <template>
   <div>
-    <h2 style="margin-bottom: 24px">Review Script</h2>
+    <h2 class="step-title">Review Script</h2>
 
     <!-- Loading state -->
-    <div v-if="loading" style="text-align: center; padding: 48px 0">
-      <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-      <p style="margin-top: 12px; color: #909399">Generating script from prompt...</p>
+    <div v-if="loading" class="loading-state">
+      <el-icon class="is-loading" :size="32" color="var(--ce-purple-light)"><Loading /></el-icon>
+      <p class="loading-text">Generating script from prompt...</p>
     </div>
 
     <!-- Script editor -->
@@ -137,7 +137,7 @@ function onScriptInput() {
           <el-icon><ArrowLeft /></el-icon> Back
         </el-button>
 
-        <div style="display: flex; gap: 8px">
+        <div class="actions-right">
           <el-button
             v-if="props.sessionData?.input_type === 'prompt'"
             @click="handleGenerate"
@@ -170,6 +170,23 @@ function onScriptInput() {
 </template>
 
 <style scoped>
+.step-title {
+  margin-bottom: 24px;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ce-text-primary);
+}
+
+.loading-state {
+  text-align: center;
+  padding: 48px 0;
+}
+
+.loading-text {
+  margin-top: 12px;
+  color: var(--ce-text-muted);
+}
+
 .script-stats {
   display: flex;
   gap: 8px;
@@ -180,5 +197,10 @@ function onScriptInput() {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.actions-right {
+  display: flex;
+  gap: 8px;
 }
 </style>

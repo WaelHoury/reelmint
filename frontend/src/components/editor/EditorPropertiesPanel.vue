@@ -478,7 +478,7 @@ function formatTime(seconds) {
 }
 
 .properties-panel :deep(.el-slider__bar) {
-  background-color: #409eff;
+  background-color: #A78BFA;
 }
 
 .properties-panel :deep(.el-radio-button__inner) {
@@ -488,8 +488,8 @@ function formatTime(seconds) {
 }
 
 .properties-panel :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background-color: #409eff !important;
-  border-color: #409eff !important;
+  background-color: #6D28D9 !important;
+  border-color: #6D28D9 !important;
   color: #fff !important;
 }
 

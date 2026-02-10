@@ -40,7 +40,7 @@ const props = defineProps({
   label: { type: String, default: '' },
   zoom: { type: Number, default: 1 },
   selected: { type: Boolean, default: false },
-  color: { type: String, default: '#409eff' },
+  color: { type: String, default: '#A78BFA' },
   compact: { type: Boolean, default: false },
   trimmable: { type: Boolean, default: false },
   trimStart: { type: Number, default: 0 },

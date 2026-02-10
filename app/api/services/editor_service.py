@@ -464,7 +464,6 @@ class EditorService:
         """Replace specified clips and re-concatenate all clips."""
         from video_assembler import VideoAssembler
         from app.media import VideoSearcher
-        from clip_scorer import CLIPMatcher
 
         assembler = VideoAssembler(
             ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
@@ -503,20 +502,24 @@ class EditorService:
 
             if is_replace:
                 searcher = VideoSearcher(api_key=settings.pexels_api_key)
-                videos = searcher.search(keywords, max_results=5, orientation=orientation)
+                best = None
 
                 if specific_video_id:
-                    videos = [v for v in videos if str(v.id) == specific_video_id] or videos
+                    best = searcher.get_video_by_id(str(specific_video_id))
 
-                if not videos:
-                    continue
-
-                best = videos[0]
+                if not best:
+                    videos = searcher.search(keywords, max_results=5, orientation=orientation)
+                    if not videos:
+                        continue
+                    best = videos[0]
 
                 # Download, normalize, and trim
                 download_dir = project_dir / "temp_download"
                 download_dir.mkdir(exist_ok=True)
-                downloaded = searcher.download_video(best, download_dir)
+                downloaded = searcher.download(
+                    best,
+                    download_dir / f"clip_{idx}_{best.id or 'selected'}.mp4",
+                )
 
                 if downloaded:
                     normalized = clips_dir / f"clip_{idx}_norm.mp4"

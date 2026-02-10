@@ -28,7 +28,8 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                    progress_callback=None,
                    narration_style: str = None,
                    subtitle_settings: dict = None,
-                   intermediate_callback=None) -> Path:
+                   intermediate_callback=None,
+                   pre_selected_clips: list = None) -> Path:
     """Generate video from text prompt or script.
 
     Args:
@@ -43,6 +44,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         narration_style: Optional narration style override (viral, informative, funny, etc.)
         subtitle_settings: Optional dict to override subtitle style (font, font_size, color, etc.)
         intermediate_callback: Optional function(data: dict) called with intermediate file paths for re-generation
+        pre_selected_clips: Optional list of clip dicts from wizard (skips LLM + CLIP scoring)
 
     Returns:
         Path to generated video file
@@ -81,20 +83,32 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         narration_style = narration_style or os.getenv("NARRATION_STYLE", "viral").lower()
 
-        if llm_provider == "openrouter":
-            planner = ScenePlanner(
-                provider="openrouter",
-                model=os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-001"),
-                base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-                api_key=os.getenv("OPENROUTER_API_KEY"),
-                narration_style=narration_style,
-            )
-        else:
-            planner = ScenePlanner(
-                provider="ollama",
-                model=os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
-                base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-                narration_style=narration_style,
+        # Skip ScenePlanner and CLIPMatcher when clips are pre-selected (saves LLM + model load time)
+        planner = None
+        matcher = None
+        if not pre_selected_clips:
+            if llm_provider == "openrouter":
+                planner = ScenePlanner(
+                    provider="openrouter",
+                    model=os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-001"),
+                    base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+                    api_key=os.getenv("OPENROUTER_API_KEY"),
+                    narration_style=narration_style,
+                )
+            else:
+                planner = ScenePlanner(
+                    provider="ollama",
+                    model=os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
+                    base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+                    narration_style=narration_style,
+                )
+
+            matcher = CLIPMatcher(
+                model_name=os.getenv("CLIP_MODEL", "ViT-B-32"),
+                pretrained=os.getenv("CLIP_PRETRAINED", "laion2b_s34b_b79k"),
+                cache_dir=Path(os.getenv("CACHE_DIR", "cache")),
+                ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
+                ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
             )
 
         tts = TTSGenerator(
@@ -117,14 +131,6 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         )
 
         searcher = VideoSearcher(api_key=os.getenv("PEXELS_API_KEY"))
-
-        matcher = CLIPMatcher(
-            model_name=os.getenv("CLIP_MODEL", "ViT-B-32"),
-            pretrained=os.getenv("CLIP_PRETRAINED", "laion2b_s34b_b79k"),
-            cache_dir=Path(os.getenv("CACHE_DIR", "cache")),
-            ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
-            ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
-        )
 
         assembler = VideoAssembler(
             ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
@@ -154,8 +160,19 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         loop_mode = os.getenv("ENABLE_VIDEO_LOOP", "false").lower() == "true"
 
-        # Branch based on script vs prompt
-        if script_text:
+        if pre_selected_clips and script_text:
+            # Clips already selected in wizard — skip LLM call entirely
+            from scene_planner import VisualClip, VideoPlan
+            print("  Using pre-selected clips from wizard (skipping LLM)")
+            plan_clips = [
+                VisualClip(
+                    keywords=c.get('keywords', ['stock', 'footage']),
+                    visual_description=c.get('visual_description', 'stock footage')
+                )
+                for c in pre_selected_clips
+            ]
+            plan = VideoPlan(narration=script_text, clips=plan_clips)
+        elif script_text:
             # User provided script - use as-is, generate only visual clips
             print("  Using user-provided script (no LLM narration modification)")
             plan = planner.generate_clips_from_script(script_text, duration_minutes)
@@ -166,22 +183,26 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                                                loop_mode=loop_mode)
 
         # Print token usage report (OpenRouter only)
-        if llm_provider == "openrouter":
+        if not pre_selected_clips and llm_provider == "openrouter":
             print(planner.get_token_report())
 
         # Print plan preview with Unicode-safe encoding for Windows
-        try:
-            print(planner.preview_continuous_plan(plan))
-        except UnicodeEncodeError:
-            preview = planner.preview_continuous_plan(plan)
-            print(preview.encode('ascii', errors='replace').decode('ascii'))
+        if not pre_selected_clips:
+            try:
+                print(planner.preview_continuous_plan(plan))
+            except UnicodeEncodeError:
+                preview = planner.preview_continuous_plan(plan)
+                print(preview.encode('ascii', errors='replace').decode('ascii'))
+        else:
+            print(f"  Script: {len(script_text.split())} words")
+            print(f"  Clips: {len(pre_selected_clips)} pre-selected")
 
         # Save LLM output to text file
         output_txt = Path(output_path).with_suffix('.txt')
         try:
             with open(output_txt, 'w', encoding='utf-8') as f:
                 f.write("=" * 70 + "\n")
-                f.write("LLM OUTPUT - VIDEO PLAN\n")
+                f.write("VIDEO PLAN" + (" (pre-selected clips)" if pre_selected_clips else " (LLM)") + "\n")
                 f.write("=" * 70 + "\n\n")
 
                 f.write("NARRATION SCRIPT:\n")
@@ -246,14 +267,8 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             print(f"  Using heuristic timestamps (offset={subtitle_offset}s)")
 
         # Step 3: Search, download, and score video clips
-        print("\n[3/5] Searching and scoring videos...")
-        _report(35, "Searching and scoring videos...")
-        trimmed_videos = []
-        used_video_ids = set()
-
         enable_color_grading = os.getenv("ENABLE_COLOR_GRADING", "true").lower() == "true"
         color_preset = os.getenv("COLOR_PRESET", "balanced")
-        candidates_count = int(os.getenv("CLIP_CANDIDATES", "5"))
 
         # Pre-compute color grade filter once
         color_grade_filter = None
@@ -280,97 +295,176 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         print(f"  {num_clips} clips x {clip_duration:.1f}s each (incl. {transition_overlap:.1f}s transition overlap)")
 
-        def _download_candidate(args):
-            vid_info, dl_path = args
-            searcher.download(vid_info, dl_path)
-            return {'path': dl_path, 'info': vid_info}
-
-        # Process clips in parallel (2 at a time overlaps downloads with CLIP scoring)
         clip_lock = threading.Lock()
-        clip_results = [None] * num_clips  # ordered results
 
-        def _process_clip(i, clip):
-            clip_dir = temp_dir / f"clip_{i}"
-            clip_dir.mkdir(exist_ok=True)
+        if pre_selected_clips:
+            # Fast path: download pre-selected clips directly (no search, no CLIP scoring)
+            print("\n[3/5] Downloading selected clips...")
+            _report(35, "Downloading selected clips...")
 
-            print(f"\n  Clip {i+1}/{num_clips}: Searching for {clip.keywords}...")
-            videos = searcher.search(clip.keywords, max_results=20, orientation=orientation)
+            clip_results = [None] * num_clips
 
-            if not videos:
-                print(f"    Warning: No videos found, trying broader search...")
-                videos = searcher.search(clip.keywords[:1], max_results=20, orientation=orientation)
+            def _process_preselected_clip(i, clip_data):
+                clip_dir = temp_dir / f"clip_{i}"
+                clip_dir.mkdir(exist_ok=True)
 
-            if not videos:
-                raise ValueError(f"No videos found for clip {i} keywords: {clip.keywords}")
+                video_id = clip_data.get('video_id')
+                preview_url = clip_data.get('video_preview_url')
+                keywords = clip_data.get('keywords', [])
 
-            # Filter out duplicates (thread-safe read)
-            with clip_lock:
-                available_videos = [v for v in videos if v.id not in used_video_ids]
-            if not available_videos:
-                available_videos = videos
+                print(f"\n  Clip {i+1}/{num_clips}: Downloading (Pexels ID: {video_id})...")
 
-            # Download candidates in parallel
-            downloaded = []
-            with ThreadPoolExecutor(max_workers=4) as dl_pool:
-                dl_futures = []
-                for j, video_info in enumerate(available_videos[:candidates_count]):
-                    download_path = clip_dir / f"candidate_{j}.mp4"
-                    dl_futures.append(dl_pool.submit(_download_candidate, (video_info, download_path)))
+                # Fetch fresh video info by ID, fallback to stored preview URL
+                download_path = clip_dir / "selected.mp4"
+                video_info = None
 
-                for future in as_completed(dl_futures):
-                    try:
-                        downloaded.append(future.result())
-                    except Exception as e:
-                        print(f"    Warning: Download failed: {e}")
+                if video_id:
+                    video_info = searcher.get_video_by_id(video_id)
 
-            if not downloaded:
-                raise ValueError(f"Failed to download any videos for clip {i}")
+                if video_info:
+                    searcher.download(video_info, download_path)
+                elif preview_url:
+                    # Fallback: download directly from stored URL
+                    import requests as _requests
+                    print(f"    Using cached preview URL...")
+                    resp = _requests.get(preview_url, stream=True, timeout=30)
+                    resp.raise_for_status()
+                    with open(download_path, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                else:
+                    raise ValueError(f"No video ID or URL for clip {i}")
 
-            # Score with CLIP (frame extraction parallelized internally)
-            score_text = f"{clip.visual_description}. {' '.join(clip.keywords)}"
-            video_paths = [d['path'] for d in downloaded]
+                # Track asset
+                asset_info = {
+                    'url': clip_data.get('author_url', ''),
+                    'author': clip_data.get('author', 'Unknown'),
+                    'provider': 'Pexels',
+                    'license': 'Pexels License'
+                }
+                with clip_lock:
+                    tracker.add_asset(asset_info, i)
 
-            print(f"    Scoring {len(video_paths)} candidates with CLIP...")
-            scores = matcher.score_videos(video_paths, score_text)
+                # Process clip: normalize + color grade + trim
+                trimmed_path = clip_dir / "trimmed.mp4"
+                assembler.process_clip(
+                    download_path, trimmed_path,
+                    duration_sec=clip_duration,
+                    color_grade_filter=color_grade_filter,
+                    orientation=orientation
+                )
 
-            best_path = max(scores, key=scores.get)
-            best_score = scores[best_path]
-            best_info = next(d['info'] for d in downloaded if d['path'] == best_path)
+                print(f"  Clip {i+1}/{num_clips} done")
+                return trimmed_path
 
-            print(f"    Best match: score={best_score:.3f}")
+            with ThreadPoolExecutor(max_workers=2) as clip_pool:
+                futures = {
+                    clip_pool.submit(_process_preselected_clip, i, clip_data): i
+                    for i, clip_data in enumerate(pre_selected_clips)
+                }
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    clip_results[idx] = future.result()
 
-            # Track asset (thread-safe)
-            with clip_lock:
-                tracker.add_asset(best_info.to_dict(), i)
-                used_video_ids.add(best_info.id)
+            trimmed_videos = clip_results
 
-            # Single-pass: normalize + color grade + trim
-            trimmed_path = clip_dir / "trimmed.mp4"
-            assembler.process_clip(
-                best_path, trimmed_path,
-                duration_sec=clip_duration,
-                color_grade_filter=color_grade_filter,
-                orientation=orientation
-            )
+        else:
+            # Full path: search Pexels, download candidates, score with CLIP
+            print("\n[3/5] Searching and scoring videos...")
+            _report(35, "Searching and scoring videos...")
+            used_video_ids = set()
+            candidates_count = int(os.getenv("CLIP_CANDIDATES", "5"))
 
-            # Clean up candidates
-            for d in downloaded:
-                if d['path'] != best_path and d['path'].exists():
-                    d['path'].unlink()
+            clip_results = [None] * num_clips
 
-            print(f"  Clip {i+1}/{num_clips} done")
-            return trimmed_path
+            def _download_candidate(args):
+                vid_info, dl_path = args
+                searcher.download(vid_info, dl_path)
+                return {'path': dl_path, 'info': vid_info}
 
-        with ThreadPoolExecutor(max_workers=2) as clip_pool:
-            futures = {
-                clip_pool.submit(_process_clip, i, clip): i
-                for i, clip in enumerate(plan.clips)
-            }
-            for future in as_completed(futures):
-                idx = futures[future]
-                clip_results[idx] = future.result()
+            def _process_clip(i, clip):
+                clip_dir = temp_dir / f"clip_{i}"
+                clip_dir.mkdir(exist_ok=True)
 
-        trimmed_videos = clip_results
+                print(f"\n  Clip {i+1}/{num_clips}: Searching for {clip.keywords}...")
+                videos = searcher.search(clip.keywords, max_results=20, orientation=orientation)
+
+                if not videos:
+                    print(f"    Warning: No videos found, trying broader search...")
+                    videos = searcher.search(clip.keywords[:1], max_results=20, orientation=orientation)
+
+                if not videos:
+                    raise ValueError(f"No videos found for clip {i} keywords: {clip.keywords}")
+
+                # Filter out duplicates (thread-safe read)
+                with clip_lock:
+                    available_videos = [v for v in videos if v.id not in used_video_ids]
+                if not available_videos:
+                    available_videos = videos
+
+                # Download candidates in parallel
+                downloaded = []
+                with ThreadPoolExecutor(max_workers=4) as dl_pool:
+                    dl_futures = []
+                    for j, video_info in enumerate(available_videos[:candidates_count]):
+                        download_path = clip_dir / f"candidate_{j}.mp4"
+                        dl_futures.append(dl_pool.submit(_download_candidate, (video_info, download_path)))
+
+                    for future in as_completed(dl_futures):
+                        try:
+                            downloaded.append(future.result())
+                        except Exception as e:
+                            print(f"    Warning: Download failed: {e}")
+
+                if not downloaded:
+                    raise ValueError(f"Failed to download any videos for clip {i}")
+
+                # Score with CLIP (frame extraction parallelized internally)
+                score_text = f"{clip.visual_description}. {' '.join(clip.keywords)}"
+                video_paths = [d['path'] for d in downloaded]
+
+                print(f"    Scoring {len(video_paths)} candidates with CLIP...")
+                scores = matcher.score_videos(video_paths, score_text)
+
+                best_path = max(scores, key=scores.get)
+                best_score = scores[best_path]
+                best_info = next(d['info'] for d in downloaded if d['path'] == best_path)
+
+                print(f"    Best match: score={best_score:.3f}")
+
+                # Track asset (thread-safe)
+                with clip_lock:
+                    tracker.add_asset(best_info.to_dict(), i)
+                    used_video_ids.add(best_info.id)
+
+                # Single-pass: normalize + color grade + trim
+                trimmed_path = clip_dir / "trimmed.mp4"
+                assembler.process_clip(
+                    best_path, trimmed_path,
+                    duration_sec=clip_duration,
+                    color_grade_filter=color_grade_filter,
+                    orientation=orientation
+                )
+
+                # Clean up candidates
+                for d in downloaded:
+                    if d['path'] != best_path and d['path'].exists():
+                        d['path'].unlink()
+
+                print(f"  Clip {i+1}/{num_clips} done")
+                return trimmed_path
+
+            with ThreadPoolExecutor(max_workers=2) as clip_pool:
+                futures = {
+                    clip_pool.submit(_process_clip, i, clip): i
+                    for i, clip in enumerate(plan.clips)
+                }
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    clip_results[idx] = future.result()
+
+            trimmed_videos = clip_results
 
         # Save original trimmed clips BEFORE loop/outro modification (for editor persistence)
         original_trimmed_videos = list(trimmed_videos)

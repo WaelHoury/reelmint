@@ -177,19 +177,21 @@ async function applySubtitleChanges() {
 
 <template>
   <div class="generate-step">
-    <h2 style="margin-bottom: 24px">Generate Video</h2>
+    <h2 class="step-title">Generate Video</h2>
 
     <!-- Progress -->
     <div v-if="status === 'queued' || status === 'processing'" class="progress-section">
-      <el-icon class="is-loading" :size="48" color="#409eff"><Loading /></el-icon>
-      <h3 style="margin-top: 16px">{{ status === 'queued' ? 'Queued...' : 'Generating your video...' }}</h3>
+      <div class="progress-icon ce-pulse">
+        <el-icon :size="48" color="var(--ce-purple-light)"><Loading /></el-icon>
+      </div>
+      <h3 class="progress-heading">{{ status === 'queued' ? 'Queued...' : 'Generating your video...' }}</h3>
       <p class="step-label">{{ currentStep }}</p>
 
       <el-progress
         :percentage="progressPercent"
         :stroke-width="12"
         :format="(p) => `${p}%`"
-        style="margin-top: 24px; max-width: 500px; width: 100%"
+        class="progress-bar"
       />
 
       <p class="hint">This may take a few minutes. Do not close this page.</p>
@@ -206,7 +208,7 @@ async function applySubtitleChanges() {
             :key="videoKey"
             controls
             width="100%"
-            style="max-width: 720px; border-radius: 8px; background: #000"
+            class="video-player"
           >
             <source :src="videoStreamSrc" type="video/mp4">
             Your browser does not support the video tag.
@@ -222,7 +224,7 @@ async function applySubtitleChanges() {
       </div>
 
       <!-- Action Buttons -->
-      <div style="display: flex; gap: 12px; justify-content: center; margin-top: 20px; flex-wrap: wrap">
+      <div class="action-buttons">
         <el-button type="primary" size="large" @click="downloadVideo">
           <el-icon><Download /></el-icon> Download Video
         </el-button>
@@ -240,14 +242,12 @@ async function applySubtitleChanges() {
       <!-- Subtitle Editor -->
       <el-collapse-transition>
         <div v-if="showSubtitleEditor" class="subtitle-editor">
-          <el-card shadow="never">
-            <template #header>
-              <span style="font-weight: 600">Customize Subtitles</span>
-            </template>
+          <div class="glass-card subtitle-card">
+            <h3 class="subtitle-card-title">Customize Subtitles</h3>
 
             <el-form label-position="top" style="text-align: left">
               <!-- Live Preview Controls -->
-              <div style="display: flex; gap: 16px; align-items: center; margin-bottom: 16px">
+              <div class="preview-controls">
                 <el-switch v-model="previewEnabled" active-text="Live Preview" />
                 <el-input
                   v-if="previewEnabled"
@@ -287,7 +287,7 @@ async function applySubtitleChanges() {
               </el-form-item>
 
               <!-- Colors Row -->
-              <div style="display: flex; gap: 24px">
+              <div class="color-row">
                 <el-form-item label="Text Color" style="flex: 1">
                   <el-color-picker v-model="subtitleForm.color" show-alpha />
                 </el-form-item>
@@ -316,7 +316,7 @@ async function applySubtitleChanges() {
                 </el-button>
               </el-form-item>
             </el-form>
-          </el-card>
+          </div>
         </div>
       </el-collapse-transition>
     </div>
@@ -325,7 +325,7 @@ async function applySubtitleChanges() {
     <div v-else-if="status === 'failed'" class="result-section">
       <el-result icon="error" title="Generation Failed" :sub-title="errorMessage || 'An unknown error occurred.'">
         <template #extra>
-          <div style="display: flex; gap: 12px; justify-content: center">
+          <div class="action-buttons">
             <el-button type="primary" @click="handleGenerate">
               <el-icon><Refresh /></el-icon> Retry
             </el-button>
@@ -338,7 +338,7 @@ async function applySubtitleChanges() {
     </div>
 
     <!-- Idle (shouldn't normally show) -->
-    <div v-else style="text-align: center; padding: 48px 0">
+    <div v-else class="idle-state">
       <el-button type="primary" size="large" @click="handleGenerate">
         <el-icon><VideoCamera /></el-icon> Start Generation
       </el-button>
@@ -351,6 +351,13 @@ async function applySubtitleChanges() {
   text-align: center;
 }
 
+.step-title {
+  margin-bottom: 24px;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ce-text-primary);
+}
+
 .progress-section {
   display: flex;
   flex-direction: column;
@@ -358,14 +365,28 @@ async function applySubtitleChanges() {
   padding: 48px 0;
 }
 
+.progress-icon {
+  margin-bottom: 16px;
+}
+
+.progress-heading {
+  color: var(--ce-text-primary);
+}
+
 .step-label {
-  color: #909399;
+  color: var(--ce-text-muted);
   margin-top: 8px;
   font-size: 14px;
 }
 
+.progress-bar {
+  margin-top: 24px;
+  max-width: 500px;
+  width: 100%;
+}
+
 .hint {
-  color: #c0c4cc;
+  color: var(--ce-text-muted);
   font-size: 12px;
   margin-top: 16px;
 }
@@ -387,14 +408,56 @@ async function applySubtitleChanges() {
   width: 100%;
 }
 
+.video-player {
+  max-width: 720px;
+  border-radius: 12px;
+  background: #000;
+}
+
 .subtitle-preview {
   pointer-events: none;
   user-select: none;
   z-index: 10;
 }
 
+.action-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+
 .subtitle-editor {
   max-width: 500px;
   margin: 24px auto 0;
+}
+
+.subtitle-card {
+  padding: 24px;
+}
+
+.subtitle-card-title {
+  font-weight: 600;
+  font-size: 16px;
+  color: var(--ce-text-primary);
+  margin-bottom: 20px;
+}
+
+.preview-controls {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.color-row {
+  display: flex;
+  gap: 24px;
+}
+
+.idle-state {
+  text-align: center;
+  padding: 48px 0;
 }
 </style>

@@ -353,10 +353,11 @@ onMounted(() => {
   --text-muted: #a0a0c0;
   --text-label: #8a8aaa;
   --text-dim: #6a6a8a;
-  --accent-blue: #409eff;
+  --accent-primary: #A78BFA;
+  --accent-primary-dark: #6D28D9;
   --accent-green: #67c23a;
   --accent-orange: #e6a23c;
-  --accent-purple: #b86bff;
+  --accent-purple: #A78BFA;
   --accent-red: #ff4757;
 
   position: fixed;
@@ -368,7 +369,7 @@ onMounted(() => {
   grid-template-rows: 52px 1fr 230px;
   grid-template-columns: 1fr 320px;
   overflow: hidden;
-  font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  font-family: var(--ce-font-family, 'Inter', system-ui, sans-serif);
 }
 
 /* Toolbar */
@@ -466,7 +467,9 @@ onMounted(() => {
   color: var(--accent-orange);
 }
 .video-editor :deep(.el-button--primary) {
-  --el-button-bg-color: var(--accent-blue);
-  --el-button-border-color: var(--accent-blue);
+  --el-button-bg-color: var(--accent-primary-dark);
+  --el-button-border-color: var(--accent-primary-dark);
+  --el-button-hover-bg-color: #7C3AED;
+  --el-button-hover-border-color: #7C3AED;
 }
 </style>

@@ -65,31 +65,21 @@ async function handleDelete(video) {
 }
 
 function formatSize(bytes) {
-  if (!bytes) return '—'
+  if (!bytes) return '--'
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function formatDuration(seconds) {
-  if (!seconds) return '—'
+  if (!seconds) return '--'
   const m = Math.floor(seconds / 60)
   const s = seconds % 60
   return m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
 function formatDate(iso) {
-  if (!iso) return '—'
+  if (!iso) return '--'
   return new Date(iso).toLocaleDateString()
-}
-
-const orientationTag = (o) => {
-  const map = { landscape: '', portrait: '', square: '' }
-  return map[o] || o
-}
-
-const orientationColor = (o) => {
-  const map = { landscape: '', portrait: 'warning', square: 'info' }
-  return map[o] || ''
 }
 
 onMounted(fetchVideos)
@@ -97,55 +87,53 @@ onMounted(fetchVideos)
 
 <template>
   <div>
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px">
-      <h2>
+    <div class="page-header">
+      <h2 class="page-title">
         My Videos
-        <el-tag v-if="total > 0" type="info" size="small" style="margin-left: 8px">{{ total }}</el-tag>
+        <el-tag v-if="total > 0" type="info" size="small" class="count-tag">{{ total }}</el-tag>
       </h2>
     </div>
 
     <div v-loading="loading">
       <el-empty v-if="!loading && videos.length === 0" description="No videos yet. Create your first video!">
-        <el-button type="primary" @click="$router.push('/create')">Create Video</el-button>
+        <el-button type="primary" @click="$router.push('/')">Create Video</el-button>
       </el-empty>
 
-      <el-row :gutter="20" v-if="videos.length > 0">
-        <el-col :xs="24" :sm="12" :md="8" :lg="6" v-for="video in videos" :key="video.id" style="margin-bottom: 20px">
-          <el-card shadow="hover" :body-style="{ padding: '0' }">
-            <div class="thumb-container" @click="playVideo(video)">
-              <img v-if="video.has_thumbnail" :src="getThumbnailUrl(video.id)" class="thumb-img" />
-              <div v-else class="thumb-placeholder">
-                <el-icon :size="48" color="#c0c4cc"><VideoCamera /></el-icon>
-              </div>
-              <div class="play-overlay">
-                <el-icon :size="40" color="#fff"><VideoPlay /></el-icon>
-              </div>
+      <div v-if="videos.length > 0" class="videos-grid">
+        <div v-for="video in videos" :key="video.id" class="video-card glass-card">
+          <div class="thumb-container" @click="playVideo(video)">
+            <img v-if="video.has_thumbnail" :src="getThumbnailUrl(video.id)" class="thumb-img" />
+            <div v-else class="thumb-placeholder">
+              <el-icon :size="48" color="var(--ce-text-muted)"><VideoCamera /></el-icon>
             </div>
-            <div style="padding: 12px">
-              <div class="video-title" :title="video.title">{{ video.title }}</div>
-              <div class="video-meta">
-                <el-tag size="small" :type="orientationColor(video.orientation)">{{ video.orientation }}</el-tag>
-                <span>{{ formatDuration(video.duration_seconds) }}</span>
-                <span>{{ formatSize(video.file_size_bytes) }}</span>
-              </div>
-              <div class="video-meta" style="margin-top: 4px">
-                <span style="color: #909399; font-size: 12px">{{ formatDate(video.created_at) }}</span>
-              </div>
-              <div style="display: flex; gap: 8px; margin-top: 8px">
-                <el-button size="small" type="primary" plain @click.stop="router.push(`/editor/video/${video.id}`)">
-                  <el-icon><Edit /></el-icon>
-                </el-button>
-                <el-button size="small" @click.stop="downloadVideo(video)">
-                  <el-icon><Download /></el-icon>
-                </el-button>
-                <el-button size="small" type="danger" plain @click.stop="handleDelete(video)">
-                  <el-icon><Delete /></el-icon>
-                </el-button>
-              </div>
+            <div class="play-overlay">
+              <el-icon :size="40" color="#fff"><VideoPlay /></el-icon>
             </div>
-          </el-card>
-        </el-col>
-      </el-row>
+          </div>
+          <div class="card-body">
+            <div class="video-title" :title="video.title">{{ video.title }}</div>
+            <div class="video-meta">
+              <el-tag size="small">{{ video.orientation }}</el-tag>
+              <span>{{ formatDuration(video.duration_seconds) }}</span>
+              <span>{{ formatSize(video.file_size_bytes) }}</span>
+            </div>
+            <div class="video-date">
+              {{ formatDate(video.created_at) }}
+            </div>
+            <div class="card-actions">
+              <el-button size="small" type="primary" plain @click.stop="router.push(`/editor/video/${video.id}`)">
+                <el-icon><Edit /></el-icon>
+              </el-button>
+              <el-button size="small" @click.stop="downloadVideo(video)">
+                <el-icon><Download /></el-icon>
+              </el-button>
+              <el-button size="small" type="danger" plain @click.stop="handleDelete(video)">
+                <el-icon><Delete /></el-icon>
+              </el-button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <el-pagination
         v-if="total > pageSize"
@@ -154,7 +142,7 @@ onMounted(fetchVideos)
         :total="total"
         layout="prev, pager, next"
         @current-change="handlePageChange"
-        style="margin-top: 16px; justify-content: center"
+        class="pagination"
       />
     </div>
 
@@ -165,18 +153,52 @@ onMounted(fetchVideos)
         :src="getLibraryStreamUrl(playingVideo.id)"
         controls
         autoplay
-        style="width: 100%; border-radius: 8px"
+        class="dialog-video"
       ></video>
     </el-dialog>
   </div>
 </template>
 
 <style scoped>
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.page-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--ce-text-primary);
+}
+
+.count-tag {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.videos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 20px;
+}
+
+.video-card {
+  overflow: hidden;
+  transition: transform var(--ce-transition-normal), box-shadow var(--ce-transition-normal);
+}
+
+.video-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--ce-shadow-glow);
+}
+
 .thumb-container {
   position: relative;
   width: 100%;
   aspect-ratio: 16/9;
-  background: #f0f2f5;
+  background: #111;
   cursor: pointer;
   overflow: hidden;
 }
@@ -201,7 +223,7 @@ onMounted(fetchVideos)
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0,0,0,0.3);
+  background: rgba(0, 0, 0, 0.4);
   opacity: 0;
   transition: opacity 0.2s;
 }
@@ -210,10 +232,15 @@ onMounted(fetchVideos)
   opacity: 1;
 }
 
+.card-body {
+  padding: 14px 16px;
+}
+
 .video-title {
   font-weight: 600;
   font-size: 14px;
-  margin-bottom: 6px;
+  color: var(--ce-text-primary);
+  margin-bottom: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -224,6 +251,28 @@ onMounted(fetchVideos)
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: #606266;
+  color: var(--ce-text-secondary);
+}
+
+.video-date {
+  margin-top: 4px;
+  color: var(--ce-text-muted);
+  font-size: 12px;
+}
+
+.card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pagination {
+  margin-top: 24px;
+  justify-content: center;
+}
+
+.dialog-video {
+  width: 100%;
+  border-radius: 12px;
 }
 </style>
