@@ -1,6 +1,12 @@
 """Script generation and management API routes."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import asyncio
+import functools
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+logger = logging.getLogger(__name__)
 
 from app.api.schemas import (
     UpdateScriptRequest,
@@ -8,25 +14,26 @@ from app.api.schemas import (
 )
 from app.api.services.session_store import session_store
 from app.api.services.video_service import video_service
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_owned_session
 from app.db.models import User
+from app.api.limiter import limiter
 
 router = APIRouter(prefix="/sessions/{session_id}/script", tags=["scripts"])
 
 
 @router.post("", response_model=ScriptResponse)
-async def generate_script(session_id: str, user: User = Depends(get_current_user)):
+@limiter.limit("10/minute")
+async def generate_script(request: Request, session_id: str, user: User = Depends(get_current_user)):
     """Generate or validate script for session.
 
     For prompt input: Generates narration via LLM
     For script input: Validates and calculates metrics
     """
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
 
     try:
-        session = video_service.generate_script(session)
+        loop = asyncio.get_event_loop()
+        session = await loop.run_in_executor(None, video_service.generate_script, session)
         return ScriptResponse(
             script_text=session.script_text,
             word_count=session.word_count,
@@ -34,15 +41,14 @@ async def generate_script(session_id: str, user: User = Depends(get_current_user
             status=session.status,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Script generation failed for session %s", session_id)
+        raise HTTPException(status_code=500, detail="Script generation failed")
 
 
 @router.put("", response_model=ScriptResponse)
 async def update_script(session_id: str, request: UpdateScriptRequest, user: User = Depends(get_current_user)):
     """Update/edit the session script."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
 
     if session.status not in ("draft", "script_ready"):
         raise HTTPException(
@@ -51,7 +57,10 @@ async def update_script(session_id: str, request: UpdateScriptRequest, user: Use
         )
 
     try:
-        session = video_service.update_script(session, request.script_text)
+        loop = asyncio.get_event_loop()
+        session = await loop.run_in_executor(
+            None, functools.partial(video_service.update_script, session, request.script_text)
+        )
         return ScriptResponse(
             script_text=session.script_text,
             word_count=session.word_count,
@@ -59,15 +68,14 @@ async def update_script(session_id: str, request: UpdateScriptRequest, user: Use
             status=session.status,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Script update failed for session %s", session_id)
+        raise HTTPException(status_code=500, detail="Failed to update script")
 
 
 @router.get("", response_model=ScriptResponse)
 async def get_script(session_id: str, user: User = Depends(get_current_user)):
     """Get current script for session."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
 
     if not session.script_text:
         raise HTTPException(status_code=404, detail="No script generated yet")
@@ -83,9 +91,7 @@ async def get_script(session_id: str, user: User = Depends(get_current_user)):
 @router.post("/confirm", response_model=ScriptResponse)
 async def confirm_script(session_id: str, user: User = Depends(get_current_user)):
     """Confirm script is ready, advance to clips stage."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
 
     if not session.script_text:
         raise HTTPException(status_code=400, detail="No script to confirm")

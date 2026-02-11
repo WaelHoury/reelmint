@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import List, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SessionSettings(BaseModel):
@@ -26,6 +26,16 @@ class CreateSessionRequest(BaseModel):
     subtitles_enabled: bool = Field(default=True)
     orientation: Literal["landscape", "portrait", "square"] = Field(default="landscape")
     narration_style: Optional[str] = Field(default=None, description="Narration style for prompt mode (viral, informative, funny, storytelling, motivational, creative)")
+
+    @field_validator("title")
+    @classmethod
+    def validate_title_safe(cls, v: str) -> str:
+        """Reject titles containing path traversal characters."""
+        if any(c in v for c in ("/", "\\", "\0")):
+            raise ValueError("Title must not contain path separator characters")
+        if ".." in v:
+            raise ValueError("Title must not contain '..'")
+        return v.strip()
 
 
 class SessionResponse(BaseModel):

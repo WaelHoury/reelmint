@@ -25,6 +25,7 @@ soundfile
 # Utilities
 python-dotenv
 tqdm
+slowapi
 
 # Database
 alembic

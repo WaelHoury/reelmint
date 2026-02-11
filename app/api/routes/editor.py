@@ -1,17 +1,23 @@
 """Video editor API routes — load editor data, render changes, search clips."""
 
+import asyncio
+import functools
 import json
+import logging
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import settings
 from app.db.base import get_db
 from app.db.models import User, Video
-from app.api.deps import get_current_user, get_current_user_from_token_param
+from app.api.deps import get_current_user, get_current_user_from_token_param, get_owned_session
 from app.api.services.session_store import session_store
 from app.api.services.editor_service import editor_service
+from app.utils.helpers import stream_file_response, project_lock
+from app.api.limiter import limiter
 from app.api.schemas.editor import (
     EditorDataResponse,
     EditorRenderRequest,
@@ -33,11 +39,7 @@ async def get_session_editor_data(
     user: User = Depends(get_current_user),
 ):
     """Load editor data for a session. Requires project files to be persisted."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.user_id and session.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not your session")
+    session = get_owned_session(session_id, user)
     if session.status != "completed":
         raise HTTPException(status_code=400, detail="Video must be completed before editing")
 
@@ -66,17 +68,15 @@ async def get_session_editor_data(
 
 
 @router.put("/sessions/{session_id}/editor/render", response_model=EditorRenderResponse)
+@limiter.limit("5/minute")
 async def render_session_editor(
+    request: Request,
     session_id: str,
-    request: EditorRenderRequest,
+    render_request: EditorRenderRequest,
     user: User = Depends(get_current_user),
 ):
     """Render editor changes for a session."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.user_id and session.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not your session")
+    session = get_owned_session(session_id, user)
 
     project_dir = _resolve_project_dir_from_session(session)
     if not project_dir:
@@ -87,16 +87,27 @@ async def render_session_editor(
     if not output_path:
         raise HTTPException(status_code=400, detail="No output path for this session")
 
+    # Use project dir name as lock key to prevent concurrent file mutations
+    lock_id = project_dir.name
+
+    def _render_with_lock():
+        with project_lock(lock_id):
+            return editor_service.render_changes(
+                project_dir, project,
+                subtitles=render_request.subtitles.model_dump() if render_request.subtitles else None,
+                audio=render_request.audio.model_dump() if render_request.audio else None,
+                replaced_clips=[c.model_dump() for c in render_request.replaced_clips] if render_request.replaced_clips else None,
+                output_path=output_path,
+            )
+
     try:
-        render_type = editor_service.render_changes(
-            project_dir, project,
-            subtitles=request.subtitles.model_dump() if request.subtitles else None,
-            audio=request.audio.model_dump() if request.audio else None,
-            replaced_clips=[c.model_dump() for c in request.replaced_clips] if request.replaced_clips else None,
-            output_path=output_path,
-        )
+        loop = asyncio.get_event_loop()
+        render_type = await loop.run_in_executor(None, _render_with_lock)
+    except HTTPException:
+        raise  # Re-raise 409 from lock contention
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Render failed: {str(e)}")
+        logger.exception("Video render failed")
+        raise HTTPException(status_code=500, detail="Render failed")
 
     return EditorRenderResponse(
         status="ok",
@@ -112,11 +123,7 @@ async def stream_session_preview(
     user: User = Depends(get_current_user_from_token_param),
 ):
     """Stream the subtitle-free preview video for editor playback."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    if session.user_id and session.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not your session")
+    session = get_owned_session(session_id, user)
 
     project_dir = _resolve_project_dir_from_session(session)
     if not project_dir:
@@ -128,7 +135,7 @@ async def stream_session_preview(
     if not preview_path or not preview_path.exists():
         raise HTTPException(status_code=404, detail="Preview not available")
 
-    return _stream_file(preview_path, request)
+    return stream_file_response(preview_path, request)
 
 
 # ─── Library video editor endpoints ───
@@ -168,9 +175,11 @@ async def get_library_editor_data(
 
 
 @router.put("/videos/{video_id}/editor/render", response_model=EditorRenderResponse)
+@limiter.limit("5/minute")
 async def render_library_editor(
+    request: Request,
     video_id: int,
-    request: EditorRenderRequest,
+    render_request: EditorRenderRequest,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -186,16 +195,27 @@ async def render_library_editor(
     project = editor_service.load_project(project_dir)
     output_path = Path(settings.output_dir) / video.output_filename
 
+    # Use project dir name as lock key to prevent concurrent file mutations
+    lock_id = project_dir.name
+
+    def _render_with_lock():
+        with project_lock(lock_id):
+            return editor_service.render_changes(
+                project_dir, project,
+                subtitles=render_request.subtitles.model_dump() if render_request.subtitles else None,
+                audio=render_request.audio.model_dump() if render_request.audio else None,
+                replaced_clips=[c.model_dump() for c in render_request.replaced_clips] if render_request.replaced_clips else None,
+                output_path=output_path,
+            )
+
     try:
-        render_type = editor_service.render_changes(
-            project_dir, project,
-            subtitles=request.subtitles.model_dump() if request.subtitles else None,
-            audio=request.audio.model_dump() if request.audio else None,
-            replaced_clips=[c.model_dump() for c in request.replaced_clips] if request.replaced_clips else None,
-            output_path=output_path,
-        )
+        loop = asyncio.get_event_loop()
+        render_type = await loop.run_in_executor(None, _render_with_lock)
+    except HTTPException:
+        raise  # Re-raise 409 from lock contention
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Render failed: {str(e)}")
+        logger.exception("Video render failed")
+        raise HTTPException(status_code=500, detail="Render failed")
 
     return EditorRenderResponse(
         status="ok",
@@ -226,7 +246,7 @@ async def stream_video_preview(
     if not preview_path or not preview_path.exists():
         raise HTTPException(status_code=404, detail="Preview not available")
 
-    return _stream_file(preview_path, request)
+    return stream_file_response(preview_path, request)
 
 
 # ─── Shared clip search ───
@@ -247,64 +267,6 @@ async def search_replacement_clips(
 
 
 # ─── Helpers ───
-
-
-def _stream_file(file_path: Path, request: Request):
-    """Stream a file with HTTP Range support and cache-control headers."""
-    file_size = file_path.stat().st_size
-    range_header = request.headers.get("range")
-
-    headers_base = {
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-    }
-
-    if range_header:
-        range_val = range_header.strip().split("=")[1]
-        range_parts = range_val.split("-")
-        start = int(range_parts[0])
-        end = int(range_parts[1]) if range_parts[1] else file_size - 1
-        end = min(end, file_size - 1)
-        chunk_size = end - start + 1
-
-        def iter_file():
-            with open(file_path, "rb") as f:
-                f.seek(start)
-                remaining = chunk_size
-                while remaining > 0:
-                    data = f.read(min(8192, remaining))
-                    if not data:
-                        break
-                    remaining -= len(data)
-                    yield data
-
-        return StreamingResponse(
-            iter_file(),
-            status_code=206,
-            media_type="video/mp4",
-            headers={
-                **headers_base,
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Content-Length": str(chunk_size),
-            },
-        )
-
-    def iter_full():
-        with open(file_path, "rb") as f:
-            while True:
-                chunk = f.read(8192)
-                if not chunk:
-                    break
-                yield chunk
-
-    return StreamingResponse(
-        iter_full(),
-        media_type="video/mp4",
-        headers={
-            **headers_base,
-            "Content-Length": str(file_size),
-        },
-    )
 
 
 def _resolve_project_dir_from_session(session) -> Path | None:

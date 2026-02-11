@@ -1,8 +1,14 @@
 """Video generation and download API routes."""
 
+import asyncio
+import functools
+import logging
+
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -10,8 +16,10 @@ from typing import Optional
 from app.api.schemas import JobStatusResponse, VideoDownloadResponse
 from app.api.services.session_store import session_store
 from app.api.services.video_service import video_service, regenerate_subtitles
-from app.api.deps import get_current_user, get_current_user_from_token_param
+from app.api.deps import get_current_user, get_current_user_from_token_param, get_owned_session
 from app.db.models import User
+from app.utils.helpers import stream_file_response, project_lock
+from app.api.limiter import limiter
 
 
 class UpdateSubtitlesRequest(BaseModel):
@@ -27,11 +35,10 @@ router = APIRouter(prefix="/sessions/{session_id}", tags=["videos"])
 
 
 @router.post("/generate", response_model=JobStatusResponse)
-async def start_video_generation(session_id: str, user: User = Depends(get_current_user)):
+@limiter.limit("3/minute")
+async def start_video_generation(request: Request, session_id: str, user: User = Depends(get_current_user)):
     """Start video generation as background job."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
 
     if session.status != "clips_ready":
         raise HTTPException(
@@ -48,28 +55,20 @@ async def start_video_generation(session_id: str, user: User = Depends(get_curre
             current_step="Queued for processing...",
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Failed to queue video generation for session %s", session_id)
+        raise HTTPException(status_code=500, detail="Failed to queue video generation")
 
 
 @router.get("/status", response_model=JobStatusResponse)
 async def get_job_status(session_id: str, user: User = Depends(get_current_user)):
     """Get video generation job status."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
 
     status_data = video_service.get_job_status(session)
 
-    # Map RQ status to our status
-    rq_status = status_data.get('status', session.status)
-    if rq_status == 'finished':
-        rq_status = 'completed'
-    elif rq_status == 'started':
-        rq_status = 'processing'
-
     return JobStatusResponse(
         job_id=status_data.get('job_id'),
-        status=rq_status,
+        status=status_data.get('status', 'queued'),
         progress_percent=status_data.get('progress_percent') or session.progress_percent,
         current_step=status_data.get('current_step') or session.current_step,
         error_message=status_data.get('error_message'),
@@ -80,9 +79,7 @@ async def get_job_status(session_id: str, user: User = Depends(get_current_user)
 @router.get("/video")
 async def download_video(session_id: str, user: User = Depends(get_current_user_from_token_param)):
     """Download the generated video."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
 
     if session.status != "completed":
         raise HTTPException(
@@ -107,9 +104,7 @@ async def download_video(session_id: str, user: User = Depends(get_current_user_
 @router.get("/video/stream")
 async def stream_video(session_id: str, request: Request, user: User = Depends(get_current_user_from_token_param)):
     """Stream the generated video with Range request support for in-browser playback."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
 
     if session.status != "completed":
         raise HTTPException(
@@ -124,63 +119,13 @@ async def stream_video(session_id: str, request: Request, user: User = Depends(g
     if not video_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found on disk")
 
-    file_size = video_path.stat().st_size
-    range_header = request.headers.get("range")
-
-    if range_header:
-        # Parse Range header: "bytes=start-end"
-        range_val = range_header.strip().split("=")[1]
-        range_parts = range_val.split("-")
-        start = int(range_parts[0])
-        end = int(range_parts[1]) if range_parts[1] else file_size - 1
-        end = min(end, file_size - 1)
-        chunk_size = end - start + 1
-
-        def iter_file():
-            with open(video_path, "rb") as f:
-                f.seek(start)
-                remaining = chunk_size
-                while remaining > 0:
-                    read_size = min(8192, remaining)
-                    data = f.read(read_size)
-                    if not data:
-                        break
-                    remaining -= len(data)
-                    yield data
-
-        return StreamingResponse(
-            iter_file(),
-            status_code=206,
-            media_type="video/mp4",
-            headers={
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(chunk_size),
-            },
-        )
-
-    # No Range header — return full file
-    def iter_full():
-        with open(video_path, "rb") as f:
-            while chunk := f.read(8192):
-                yield chunk
-
-    return StreamingResponse(
-        iter_full(),
-        media_type="video/mp4",
-        headers={
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(file_size),
-        },
-    )
+    return stream_file_response(video_path, request)
 
 
 @router.get("/video/info", response_model=VideoDownloadResponse)
 async def get_video_info(session_id: str, user: User = Depends(get_current_user)):
     """Get video download information."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
 
     if session.status != "completed":
         raise HTTPException(
@@ -206,11 +151,10 @@ async def get_video_info(session_id: str, user: User = Depends(get_current_user)
 
 
 @router.put("/subtitles")
-async def update_video_subtitles(session_id: str, request: UpdateSubtitlesRequest, user: User = Depends(get_current_user)):
+@limiter.limit("5/minute")
+async def update_video_subtitles(request: Request, session_id: str, sub_request: UpdateSubtitlesRequest, user: User = Depends(get_current_user)):
     """Re-generate video subtitles with custom settings."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
 
     if session.status != "completed":
         raise HTTPException(
@@ -218,10 +162,18 @@ async def update_video_subtitles(session_id: str, request: UpdateSubtitlesReques
             detail=f"Video must be completed first. Status: {session.status}"
         )
 
+    def _regen_with_lock():
+        with project_lock(session_id):
+            regenerate_subtitles(session, sub_request.model_dump(exclude_none=True))
+
     try:
-        updated = regenerate_subtitles(session, request.model_dump(exclude_none=True))
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _regen_with_lock)
         return {"status": "ok", "message": "Subtitles updated successfully"}
+    except HTTPException:
+        raise  # Re-raise 409 from lock contention
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Subtitle update failed for session %s", session_id)
+        raise HTTPException(status_code=500, detail="Subtitle update failed")

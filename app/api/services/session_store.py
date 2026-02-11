@@ -182,6 +182,8 @@ class SessionStore:
         )
 
         self._save(session)
+        if user_id:
+            self.redis.sadd(f"user_sessions:{user_id}", session_id)
         return session
 
     def get(self, session_id: str) -> Optional[VideoSession]:
@@ -207,7 +209,7 @@ class SessionStore:
         self._save(session)
 
     def delete(self, session_id: str) -> bool:
-        """Delete session.
+        """Delete session and remove from user index.
 
         Args:
             session_id: Session ID
@@ -215,10 +217,37 @@ class SessionStore:
         Returns:
             True if deleted, False if not found
         """
+        session = self.get(session_id)
+        if session and session.user_id:
+            self.redis.srem(f"user_sessions:{session.user_id}", session_id)
         return bool(self.redis.delete(self._key(session_id)))
 
+    def list_by_user(self, user_id: int, limit: int = 100) -> List[VideoSession]:
+        """List sessions belonging to a specific user.
+
+        Uses a Redis Set secondary index for efficient per-user lookup.
+
+        Args:
+            user_id: Owner's user ID
+            limit: Maximum sessions to return
+
+        Returns:
+            List of sessions owned by the user, newest first
+        """
+        session_ids = self.redis.smembers(f"user_sessions:{user_id}")
+        sessions = []
+        for sid in session_ids:
+            data = self.redis.get(self._key(sid))
+            if data:
+                sessions.append(self._deserialize(data))
+            else:
+                # Session expired but still in index — clean up
+                self.redis.srem(f"user_sessions:{user_id}", sid)
+        sessions.sort(key=lambda s: s.created_at, reverse=True)
+        return sessions[:limit]
+
     def list_all(self, limit: int = 100) -> List[VideoSession]:
-        """List all sessions.
+        """List all sessions using SCAN (non-blocking). Internal/admin use only.
 
         Args:
             limit: Maximum sessions to return
@@ -226,12 +255,18 @@ class SessionStore:
         Returns:
             List of sessions
         """
-        keys = self.redis.keys(f"{self.key_prefix}*")
         sessions = []
-        for key in keys[:limit]:
-            data = self.redis.get(key)
-            if data:
-                sessions.append(self._deserialize(data))
+        cursor = 0
+        while True:
+            cursor, keys = self.redis.scan(cursor, match=f"{self.key_prefix}*", count=50)
+            for key in keys:
+                data = self.redis.get(key)
+                if data:
+                    sessions.append(self._deserialize(data))
+                if len(sessions) >= limit:
+                    return sorted(sessions, key=lambda s: s.created_at, reverse=True)
+            if cursor == 0:
+                break
         return sorted(sessions, key=lambda s: s.created_at, reverse=True)
 
     def _save(self, session: VideoSession) -> None:

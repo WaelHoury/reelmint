@@ -18,11 +18,17 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Download spacy model required by Kokoro TTS (via misaki/en.py)
+RUN python -m spacy download en_core_web_sm
+
 # Copy application code
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p output temp cache
+# Create necessary directories and non-root user
+RUN mkdir -p output temp cache projects \
+    && useradd -m -r appuser \
+    && chown -R appuser:appuser /app
+USER appuser
 
 # Expose API port
 EXPOSE 8000

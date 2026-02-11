@@ -12,8 +12,8 @@ services:
       POSTGRES_USER: aivideo
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aivideo_dev}
       POSTGRES_DB: aivideo
-    ports:
-      - "5432:5432"
+    # Ports not exposed to host — accessible only within Docker network.
+    # For dev access, use docker-compose.override.yml
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,8 +26,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: aivideo-redis
-    ports:
-      - "6379:6379"
+    # Ports not exposed to host — accessible only within Docker network.
     volumes:
       - redis_data:/data
     healthcheck:
@@ -66,11 +65,12 @@ services:
       - ./models:/app/models
     restart: unless-stopped
 
-  # RQ Worker - Background job processor
+  # RQ Worker - Background job processor (scaled to 4 replicas)
   worker:
     build: .
-    container_name: aivideo-worker
     command: python run_worker.py
+    deploy:
+      replicas: 4
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://aivideo:${POSTGRES_PASSWORD:-aivideo_dev}@postgres:5432/aivideo

@@ -12,7 +12,7 @@ from app.api.schemas import (
     SessionSettings,
 )
 from app.api.services.session_store import session_store
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_owned_session
 from app.db.base import get_db
 from app.db.models import User, Video
 
@@ -71,8 +71,8 @@ async def create_session(
 
 @router.get("", response_model=SessionListResponse)
 async def list_sessions(user: User = Depends(get_current_user)):
-    """List all sessions."""
-    sessions = session_store.list_all()
+    """List current user's sessions."""
+    sessions = session_store.list_by_user(user.id)
     return SessionListResponse(
         sessions=[_session_to_response(s) for s in sessions],
         total=len(sessions),
@@ -82,17 +82,15 @@ async def list_sessions(user: User = Depends(get_current_user)):
 @router.get("/{session_id}", response_model=SessionResponse)
 async def get_session(session_id: str, user: User = Depends(get_current_user)):
     """Get session by ID."""
-    session = session_store.get(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
     return _session_to_response(session)
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_session(session_id: str, user: User = Depends(get_current_user)):
     """Delete a session."""
-    if not session_store.delete(session_id):
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = get_owned_session(session_id, user)
+    session_store.delete(session.session_id)
 
 
 def _session_to_response(session) -> SessionResponse:

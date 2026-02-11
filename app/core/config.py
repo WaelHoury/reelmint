@@ -1,8 +1,10 @@
 """Centralized configuration and settings for AI Video Maker."""
 
+import logging
 import os
 from pathlib import Path
 from typing import Literal, Optional
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
 
@@ -119,6 +121,30 @@ class Settings(BaseSettings):
     jwt_secret_key: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
     jwt_expiry_hours: int = 72
+
+    # === Cleanup ===
+    temp_retention_hours: int = 48
+
+    # === CORS ===
+    cors_origins: str = "http://localhost:3000"
+
+    # === Environment ===
+    environment: Literal["development", "production"] = "development"
+
+    @model_validator(mode="after")
+    def _validate_production_secrets(self):
+        """Ensure critical secrets are set in production."""
+        if self.environment == "production":
+            if self.jwt_secret_key == "change-me-in-production":
+                raise ValueError(
+                    "JWT_SECRET_KEY must be set to a secure random value in production. "
+                    "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+                )
+        elif self.jwt_secret_key == "change-me-in-production":
+            logging.getLogger(__name__).warning(
+                "Using default JWT secret key. Set JWT_SECRET_KEY env var before deploying."
+            )
+        return self
 
     class Config:
         env_file = ".env"

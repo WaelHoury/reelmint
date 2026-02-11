@@ -1,9 +1,15 @@
 """FastAPI application for AI Video Maker API."""
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
 
+from app.core.config import settings
+from app.api.limiter import limiter
 from app.api.routes import (
     sessions_router,
     scripts_router,
@@ -15,10 +21,12 @@ from app.api.routes import (
     editor_router,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Run database migrations on startup."""
+    """Run database migrations and temp cleanup on startup."""
     from alembic.config import Config
     from alembic import command
     import os
@@ -27,9 +35,15 @@ async def lifespan(app: FastAPI):
     alembic_cfg.set_main_option("script_location", os.path.join(os.path.dirname(__file__), "..", "db", "migrations"))
     try:
         command.upgrade(alembic_cfg, "head")
-        print("Database migrations applied successfully.")
+        logger.info("Database migrations applied successfully.")
     except Exception as e:
-        print(f"Warning: Could not run migrations: {e}")
+        logger.warning("Could not run migrations: %s", e)
+
+    # Clean up old temp directories in background
+    from app.utils.helpers import cleanup_old_temp_dirs
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, cleanup_old_temp_dirs, None, settings.temp_retention_hours)
+
     yield
 
 # Create FastAPI app
@@ -41,14 +55,25 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+app.state.limiter = limiter
 
-# CORS middleware for frontend access
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    """Return 429 with a clear message when rate limit is exceeded."""
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please wait before trying again."},
+    )
+
+# CORS middleware — origins configured via CORS_ORIGINS env var
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 

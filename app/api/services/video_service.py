@@ -10,6 +10,7 @@ from redis import Redis
 
 from app.core.config import settings, get_words_per_second
 from app.api.services.session_store import VideoSession, session_store, ClipInfo
+from app.utils.helpers import sanitize_filename
 
 
 class VideoService:
@@ -246,6 +247,22 @@ class VideoService:
         session_store.update(session)
         return job.id
 
+    @staticmethod
+    def _map_rq_status(rq_status: str, session_status: str = None) -> str:
+        """Map RQ job status to API schema status."""
+        mapping = {
+            "queued": "queued", "deferred": "queued", "scheduled": "queued",
+            "started": "processing",
+            "finished": "completed",
+            "failed": "failed", "stopped": "failed", "canceled": "failed",
+        }
+        result = mapping.get(rq_status)
+        if result:
+            return result
+        # Fall back to session status
+        session_mapping = {"completed": "completed", "failed": "failed", "generating": "processing"}
+        return session_mapping.get(session_status, "queued")
+
     def get_job_status(self, session: VideoSession) -> Dict:
         """Get video generation job status.
 
@@ -253,31 +270,32 @@ class VideoService:
             session: Session with job
 
         Returns:
-            Job status dict
+            Job status dict with mapped status values
         """
         if not session.job_id:
             return {
-                'status': session.status,
+                'status': self._map_rq_status(session.status, session.status),
                 'job_id': None,
             }
 
         from rq.job import Job
         try:
             job = Job.fetch(session.job_id, connection=self.redis)
-            status = job.get_status()
+            raw_status = job.get_status()
+            mapped_status = self._map_rq_status(raw_status, session.status)
 
             return {
                 'job_id': session.job_id,
-                'status': status,
+                'status': mapped_status,
                 'progress_percent': session.progress_percent,
                 'current_step': session.current_step,
-                'error_message': session.error_message if status == 'failed' else None,
-                'output_url': f"/api/sessions/{session.session_id}/video" if status == 'finished' else None,
+                'error_message': session.error_message if mapped_status == 'failed' else None,
+                'output_url': f"/api/sessions/{session.session_id}/video" if mapped_status == 'completed' else None,
             }
         except Exception:
             return {
                 'job_id': session.job_id,
-                'status': session.status,
+                'status': self._map_rq_status(session.status, session.status),
                 'error_message': session.error_message,
             }
 
@@ -321,7 +339,9 @@ def generate_video_task(session_id: str):
             session_store.update(session)
 
         # Generate video using existing function
-        output_path = Path(settings.output_dir) / f"{session.title}.mp4"
+        safe_title = sanitize_filename(session.title)
+        filename = f"u{session.user_id}_{session.session_id[:8]}_{safe_title}.mp4"
+        output_path = Path(settings.output_dir) / filename
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         generate_video(
@@ -359,8 +379,10 @@ def generate_video_task(session_id: str):
                     session_store.update(session)
 
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("Video generation failed for session %s", session_id)
         session.status = "failed"
-        session.error_message = str(e)
+        session.error_message = "Video generation failed. Check server logs for details."
         session_store.update(session)
         raise
 
