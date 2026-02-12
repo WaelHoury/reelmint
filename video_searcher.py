@@ -1,9 +1,14 @@
 """Video search and download from stock video providers (Pexels)."""
 
+import hashlib
+import json
+import logging
 import requests
 from typing import List, Dict, Optional, Literal
 from pathlib import Path
 import time
+
+logger = logging.getLogger(__name__)
 
 
 class VideoInfo:
@@ -22,12 +27,16 @@ class VideoInfo:
         self.author = data.get('user', {}).get('name', 'Unknown')
         self.duration = data.get('duration', 0)
 
-        # Get best quality video file
+        # Get best quality video file (for final render)
         video_files = data.get('video_files', [])
         best_file = self._select_best_quality(video_files)
         self.download_url = best_file.get('link', '') if best_file else ''
         self.width = best_file.get('width', 0) if best_file else 0
         self.height = best_file.get('height', 0) if best_file else 0
+
+        # Get lighter preview file (for UI preview cards)
+        preview_file = self._select_preview_quality(video_files)
+        self.preview_url = preview_file.get('link', '') if preview_file else self.download_url
 
         # License info
         self.license = "Pexels License"
@@ -79,6 +88,30 @@ class VideoInfo:
         mp4_files.sort(key=lambda x: x.get('width', 0), reverse=True)
 
         # Return first (best quality) file
+        return mp4_files[0] if mp4_files else {}
+
+    def _select_preview_quality(self, video_files: List[Dict]) -> Dict:
+        """Select a lighter MP4 variant for UI preview cards.
+
+        Targets ~540p (960x540 landscape or equivalent). Falls back to
+        smallest available if nothing matches the target range.
+        """
+        if not video_files:
+            return {}
+
+        mp4_files = [vf for vf in video_files if vf.get('file_type') == 'video/mp4']
+        if not mp4_files:
+            mp4_files = video_files
+
+        # Sort by width ascending
+        mp4_files.sort(key=lambda x: x.get('width', 0))
+
+        # Pick the first file whose width is >= 480 (decent preview quality)
+        for vf in mp4_files:
+            if vf.get('width', 0) >= 480:
+                return vf
+
+        # Fallback to smallest available
         return mp4_files[0] if mp4_files else {}
 
     def to_dict(self) -> Dict:
@@ -284,3 +317,70 @@ class VideoSearcher:
 
         except Exception:
             return False
+
+
+class CachedVideoSearcher(VideoSearcher):
+    """VideoSearcher with Redis-backed result caching."""
+
+    def __init__(self, api_key: str, redis_client=None, cache_ttl: int = 21600):
+        super().__init__(api_key)
+        self._redis = redis_client
+        self._cache_ttl = cache_ttl  # default 6 hours
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    @staticmethod
+    def _cache_key(keywords: List[str], orientation: str) -> str:
+        """Build deterministic cache key from sorted keywords + orientation."""
+        normalized = "|".join(sorted(k.lower().strip() for k in keywords))
+        raw = f"pexels:{orientation}:{normalized}"
+        return f"pexels_cache:{hashlib.md5(raw.encode()).hexdigest()}"
+
+    def search(self, keywords: List[str], min_duration: float = 5.0,
+               max_results: int = 20,
+               orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[VideoInfo]:
+        """Search with Redis cache layer."""
+        if self._redis:
+            key = self._cache_key(keywords, orientation or 'any')
+            try:
+                cached = self._redis.get(key)
+                if cached:
+                    self._cache_hits += 1
+                    data_list = json.loads(cached)
+                    return [VideoInfo(d) for d in data_list][:max_results]
+            except Exception:
+                pass  # cache read failure is non-fatal
+
+        self._cache_misses += 1
+        videos = super().search(keywords, min_duration, max_results, orientation)
+
+        # Store raw API data in cache for reconstruction
+        if self._redis and videos:
+            key = self._cache_key(keywords, orientation or 'any')
+            try:
+                # Store enough data to reconstruct VideoInfo objects
+                serializable = []
+                for v in videos:
+                    serializable.append({
+                        'id': v.id,
+                        'url': v.url,
+                        'user': {'name': v.author},
+                        'duration': v.duration,
+                        'video_files': [
+                            {'link': v.download_url, 'width': v.width, 'height': v.height, 'file_type': 'video/mp4'},
+                            {'link': v.preview_url, 'width': 960, 'height': 540, 'file_type': 'video/mp4'},
+                        ],
+                    })
+                self._redis.setex(key, self._cache_ttl, json.dumps(serializable))
+            except Exception:
+                pass  # cache write failure is non-fatal
+
+        return videos
+
+    @property
+    def cache_stats(self) -> Dict:
+        return {
+            'hits': self._cache_hits,
+            'misses': self._cache_misses,
+            'hit_rate': self._cache_hits / max(1, self._cache_hits + self._cache_misses),
+        }

@@ -60,6 +60,8 @@ class Settings(BaseSettings):
 
     # === Video Search (Pexels) ===
     pexels_api_key: str = ""
+    clip_search_workers: int = 6
+    clip_search_cache_ttl: int = 21600  # 6 hours
 
     # === CLIP Matching ===
     clip_model: str = "ViT-B-32"

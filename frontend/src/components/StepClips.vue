@@ -1,6 +1,6 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import { generateClips, getClips, updateClip, confirmClips } from '../api'
 
 const props = defineProps({
@@ -9,33 +9,99 @@ const props = defineProps({
 
 const emit = defineEmits(['confirmed', 'back'])
 
-const loading = ref(false)
+const loading = ref(false)       // true only during initial trigger
+const generating = ref(false)    // true while clips_generating
 const confirming = ref(false)
 const clips = ref([])
-const editingClip = ref(null) // Index of clip being edited
+const totalClips = ref(0)
+const completedClips = ref(0)
+const progressPercent = ref(0)
+const editingClip = ref(null)
 const editForm = ref({ visual_description: '', keywords: '' })
 const updatingClip = ref(false)
 
-onMounted(async () => {
-  await loadClips()
+let pollTimer = null
+
+const allReady = computed(() => {
+  return clips.value.length > 0 &&
+    clips.value.every(c => c.search_status === 'ready' || c.search_status === 'failed')
 })
 
-async function loadClips() {
+onMounted(async () => {
+  await startClipGeneration()
+})
+
+onUnmounted(() => {
+  stopPolling()
+})
+
+async function startClipGeneration() {
   loading.value = true
   try {
     // Try to get existing clips first
     try {
       const { data } = await getClips(props.sessionId)
-      clips.value = data.clips
+      applyClipsData(data)
+
+      // If still generating, start polling
+      if (data.status === 'clips_generating') {
+        generating.value = true
+        loading.value = false
+        startPolling()
+        return
+      }
+
+      // Already done
+      if (data.status === 'clips_ready' && data.clips.length > 0) {
+        loading.value = false
+        return
+      }
     } catch {
-      // No clips yet, generate them
-      const { data } = await generateClips(props.sessionId)
-      clips.value = data.clips
+      // No clips yet — start generation
     }
+
+    // Trigger clip generation (returns immediately)
+    const { data } = await generateClips(props.sessionId)
+    applyClipsData(data)
+    generating.value = true
+    startPolling()
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to load clips')
+    ElMessage.error(err.response?.data?.detail || 'Failed to start clip generation')
   } finally {
     loading.value = false
+  }
+}
+
+function applyClipsData(data) {
+  clips.value = data.clips || []
+  totalClips.value = data.total_clips || 0
+  completedClips.value = data.completed_clips || 0
+  progressPercent.value = data.progress_percent || 0
+}
+
+function startPolling() {
+  stopPolling()
+  pollTimer = setInterval(pollClips, 1000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+async function pollClips() {
+  try {
+    const { data } = await getClips(props.sessionId)
+    applyClipsData(data)
+
+    if (data.status === 'clips_ready') {
+      generating.value = false
+      stopPolling()
+    }
+  } catch {
+    // Silently retry on next poll
   }
 }
 
@@ -58,7 +124,6 @@ async function saveClipEdit(clipIndex) {
       visual_description: editForm.value.visual_description,
     }
 
-    // Parse keywords if provided
     if (editForm.value.keywords.trim()) {
       payload.keywords = editForm.value.keywords
         .split(',')
@@ -68,7 +133,6 @@ async function saveClipEdit(clipIndex) {
 
     const { data } = await updateClip(props.sessionId, clipIndex, payload)
 
-    // Update local clip data
     const idx = clips.value.findIndex(c => c.index === clipIndex)
     if (idx !== -1) {
       clips.value[idx] = data
@@ -100,15 +164,28 @@ async function handleConfirm() {
   <div>
     <h2 class="step-title">Review Visual Clips</h2>
 
-    <!-- Loading -->
-    <div v-if="loading" class="loading-state">
+    <!-- Initial loading (before any clips exist) -->
+    <div v-if="loading && clips.length === 0" class="loading-state">
       <el-icon class="is-loading" :size="32" color="var(--ce-purple-light)"><Loading /></el-icon>
-      <p class="loading-text">Generating visual clips and searching for videos...</p>
+      <p class="loading-text">Starting clip generation...</p>
     </div>
 
-    <!-- Clips list -->
+    <!-- Clips content (shown as soon as we have any data) -->
     <div v-else>
+      <!-- Progress bar while generating -->
+      <div v-if="generating" class="generation-progress">
+        <el-progress
+          :percentage="progressPercent"
+          :stroke-width="8"
+          color="var(--ce-purple-light)"
+        />
+        <p class="progress-text">
+          Searching for videos... {{ completedClips }} / {{ totalClips }} clips found
+        </p>
+      </div>
+
       <el-alert
+        v-if="!generating"
         type="info"
         :closable="false"
         show-icon
@@ -122,12 +199,13 @@ async function handleConfirm() {
           v-for="clip in clips"
           :key="clip.index"
           class="clip-card glass-card"
+          :class="{ 'clip-pending': clip.search_status === 'pending' }"
         >
           <!-- Clip header -->
           <div class="clip-header">
             <span class="clip-number">Clip {{ clip.index + 1 }}</span>
             <el-button
-              v-if="editingClip !== clip.index"
+              v-if="editingClip !== clip.index && clip.search_status !== 'pending'"
               text
               type="primary"
               size="small"
@@ -137,9 +215,26 @@ async function handleConfirm() {
             </el-button>
           </div>
 
-          <!-- View mode -->
-          <div v-if="editingClip !== clip.index">
-            <!-- Video preview -->
+          <!-- Pending state -->
+          <div v-if="clip.search_status === 'pending'" class="clip-preview clip-loading-preview">
+            <el-icon class="is-loading" :size="24" color="var(--ce-text-muted)"><Loading /></el-icon>
+            <span>Searching...</span>
+          </div>
+
+          <!-- Failed state -->
+          <div v-else-if="clip.search_status === 'failed' && editingClip !== clip.index">
+            <div class="clip-preview clip-no-preview">
+              <el-icon :size="32" color="var(--el-color-warning)"><WarningFilled /></el-icon>
+              <span>No video found</span>
+            </div>
+            <p class="clip-description">{{ clip.visual_description }}</p>
+            <div class="clip-keywords">
+              <el-tag v-for="kw in clip.keywords" :key="kw" size="small" type="info">{{ kw }}</el-tag>
+            </div>
+          </div>
+
+          <!-- View mode (ready) -->
+          <div v-else-if="editingClip !== clip.index">
             <div class="clip-preview" v-if="clip.video_preview_url">
               <video
                 :src="clip.video_preview_url"
@@ -155,22 +250,12 @@ async function handleConfirm() {
               <span>No preview</span>
             </div>
 
-            <!-- Description -->
             <p class="clip-description">{{ clip.visual_description }}</p>
 
-            <!-- Keywords -->
             <div class="clip-keywords">
-              <el-tag
-                v-for="kw in clip.keywords"
-                :key="kw"
-                size="small"
-                type="info"
-              >
-                {{ kw }}
-              </el-tag>
+              <el-tag v-for="kw in clip.keywords" :key="kw" size="small" type="info">{{ kw }}</el-tag>
             </div>
 
-            <!-- Attribution -->
             <div v-if="clip.author" class="clip-author">
               by {{ clip.author }}
             </div>
@@ -220,7 +305,7 @@ async function handleConfirm() {
           size="large"
           @click="handleConfirm"
           :loading="confirming"
-          :disabled="clips.length === 0"
+          :disabled="!allReady || generating"
         >
           Confirm Clips & Generate Video
           <el-icon class="el-icon--right"><ArrowRight /></el-icon>
@@ -248,6 +333,20 @@ async function handleConfirm() {
   color: var(--ce-text-muted);
 }
 
+.generation-progress {
+  margin-bottom: 20px;
+  padding: 16px 20px;
+  border-radius: 8px;
+  background: var(--ce-surface-secondary, rgba(255,255,255,0.03));
+}
+
+.progress-text {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--ce-text-muted);
+  text-align: center;
+}
+
 .clips-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -257,6 +356,11 @@ async function handleConfirm() {
 .clip-card {
   padding: 20px;
   overflow: hidden;
+  transition: opacity 0.3s;
+}
+
+.clip-pending {
+  opacity: 0.6;
 }
 
 .clip-header {
@@ -287,7 +391,8 @@ async function handleConfirm() {
   object-fit: cover;
 }
 
-.clip-no-preview {
+.clip-no-preview,
+.clip-loading-preview {
   display: flex;
   flex-direction: column;
   align-items: center;

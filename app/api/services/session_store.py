@@ -30,7 +30,7 @@ class VideoSession:
     """Video generation session data."""
     session_id: str
     created_at: str  # ISO format
-    status: Literal["draft", "script_ready", "clips_ready", "generating", "completed", "failed"]
+    status: Literal["draft", "script_ready", "clips_generating", "clips_ready", "generating", "completed", "failed"]
 
     # User settings
     title: str

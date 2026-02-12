@@ -41,7 +41,7 @@ class CreateSessionRequest(BaseModel):
 class SessionResponse(BaseModel):
     """Response with session details."""
     session_id: str
-    status: Literal["draft", "script_ready", "clips_ready", "generating", "completed", "failed"]
+    status: Literal["draft", "script_ready", "clips_generating", "clips_ready", "generating", "completed", "failed"]
     title: str
     created_at: datetime
     input_type: Literal["prompt", "script"]

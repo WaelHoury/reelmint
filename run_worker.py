@@ -30,15 +30,17 @@ AI Video Maker - RQ Worker
 {'='*60}
 
 Connecting to Redis: {settings.redis_url}
-Listening on queue: video_generation
+Listening on queues: clip_generation, video_generation
 
 Waiting for jobs...
 {'='*60}
 """)
 
     redis_conn = Redis.from_url(settings.redis_url)
-    queue = Queue('video_generation', connection=redis_conn)
-    worker = Worker([queue], connection=redis_conn)
+    # clip_generation queue is listed first → higher priority
+    clip_queue = Queue('clip_generation', connection=redis_conn)
+    video_queue = Queue('video_generation', connection=redis_conn)
+    worker = Worker([clip_queue, video_queue], connection=redis_conn)
     worker.work()
 
 

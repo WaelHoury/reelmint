@@ -1,8 +1,11 @@
 """Video generation service for API."""
 
 import json
+import logging
 import os
 import shutil
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional
 from rq import Queue
@@ -12,6 +15,8 @@ from app.core.config import settings, get_words_per_second
 from app.api.services.session_store import VideoSession, session_store, ClipInfo
 from app.utils.helpers import sanitize_filename
 
+logger = logging.getLogger(__name__)
+
 
 class VideoService:
     """Handles video generation business logic."""
@@ -20,6 +25,7 @@ class VideoService:
         """Initialize video service."""
         self.redis = Redis.from_url(settings.redis_url)
         self.queue = Queue('video_generation', connection=self.redis)
+        self.clip_queue = Queue('clip_generation', connection=self.redis)
 
     def generate_script(self, session: VideoSession) -> VideoSession:
         """Generate narration script from prompt.
@@ -54,16 +60,16 @@ class VideoService:
         duration_minutes = session.duration_seconds / 60
         wps = get_words_per_second()
 
-        # Generate narration + clips via LLM, keep only the narration for now
-        plan = planner.generate_continuous(
+        # Generate narration only (clips are generated separately in generate_clips_task)
+        narration = planner.generate_narration(
             prompt=session.prompt,
             duration_minutes=duration_minutes,
             words_per_second=wps,
             loop_mode=session.loop_mode,
         )
 
-        session.script_text = plan.narration
-        session.word_count = len(plan.narration.split())
+        session.script_text = narration
+        session.word_count = len(narration.split())
         session.estimated_duration_seconds = session.word_count / wps
         session.status = "draft"
         session_store.update(session)
@@ -102,62 +108,31 @@ class VideoService:
         return session
 
     def generate_clips(self, session: VideoSession) -> VideoSession:
-        """Generate visual clips for the script.
+        """Queue clip generation as a background job.
 
-        Args:
-            session: Session with confirmed script
-
-        Returns:
-            Updated session with clips
+        Sets status to clips_generating, creates placeholder clips, and
+        enqueues the actual work. Returns immediately so the frontend can
+        start polling.
         """
-        if session.status != "script_ready":
+        if session.status not in ("script_ready", "clips_generating"):
             raise ValueError("Script must be confirmed before generating clips")
 
-        from app.core import ScenePlanner
-        from app.media import VideoSearcher
+        # If already generating, return current state (idempotent)
+        if session.status == "clips_generating":
+            return session
 
-        # Generate clip descriptions via LLM
-        planner = ScenePlanner(
-            provider=settings.llm_provider,
-            model=settings.ollama_model if settings.llm_provider == "ollama" else settings.openrouter_model,
-            base_url=settings.ollama_base_url if settings.llm_provider == "ollama" else settings.openrouter_base_url,
-            api_key=settings.openrouter_api_key if settings.llm_provider == "openrouter" else None,
-            narration_style=settings.narration_style,
+        session.status = "clips_generating"
+        session.clips = []  # will be populated progressively
+        session_store.update(session)
+
+        # Queue background job
+        job = self.clip_queue.enqueue(
+            'app.api.services.video_service.generate_clips_task',
+            session.session_id,
+            job_timeout='10m',
         )
 
-        duration_minutes = session.duration_seconds / 60
-        num_clips = max(3, int(session.duration_seconds / 3))
-
-        # Generate clips from script using LLM
-        plan = planner.generate_clips_from_script(session.script_text, duration_minutes)
-
-        # Search Pexels for each clip
-        searcher = VideoSearcher(api_key=settings.pexels_api_key)
-        session_clips = []
-
-        for i, clip in enumerate(plan.clips):
-            # Search for videos matching keywords
-            videos = searcher.search(clip.keywords, max_results=5, orientation=session.orientation)
-
-            video_info = None
-            if videos:
-                video_info = videos[0]  # Take first match for now
-
-            clip_info = {
-                'index': i,
-                'keywords': clip.keywords,
-                'visual_description': clip.visual_description,
-                'video_preview_url': video_info.download_url if video_info else None,
-                'video_id': str(video_info.id) if video_info else None,
-                'author': video_info.author if video_info else None,
-                'author_url': video_info.url if video_info else None,
-                'duration_seconds': video_info.duration if video_info else None,
-            }
-            session_clips.append(clip_info)
-
-        session.clips = session_clips
-        session.status = "clips_ready"
-        session_store.update(session)
+        logger.info("Clip generation queued for session %s (job %s)", session.session_id, job.id)
         return session
 
     def update_clip(self, session: VideoSession, clip_index: int,
@@ -176,18 +151,21 @@ class VideoService:
         if clip_index >= len(session.clips):
             raise ValueError(f"Invalid clip index: {clip_index}")
 
-        from app.media import VideoSearcher
+        from video_searcher import CachedVideoSearcher
 
         # Extract keywords from description if not provided
         if keywords is None:
-            # Simple keyword extraction - take nouns from description
             words = visual_description.lower().split()
-            # Filter common words, keep potential nouns
             stopwords = {'a', 'an', 'the', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'and', 'or', 'is', 'are', 'was', 'were'}
             keywords = [w for w in words if w not in stopwords and len(w) > 2][:5]
 
-        # Search for new video
-        searcher = VideoSearcher(api_key=settings.pexels_api_key)
+        # Search for new video (with cache)
+        redis_client = Redis.from_url(settings.redis_url)
+        searcher = CachedVideoSearcher(
+            api_key=settings.pexels_api_key,
+            redis_client=redis_client,
+            cache_ttl=settings.clip_search_cache_ttl,
+        )
         videos = searcher.search(keywords, max_results=5, orientation=session.orientation)
 
         video_info = videos[0] if videos else None
@@ -196,11 +174,12 @@ class VideoService:
             'index': clip_index,
             'keywords': keywords,
             'visual_description': visual_description,
-            'video_preview_url': video_info.download_url if video_info else None,
+            'video_preview_url': video_info.preview_url if video_info else None,
             'video_id': str(video_info.id) if video_info else None,
             'author': video_info.author if video_info else None,
             'author_url': video_info.url if video_info else None,
             'duration_seconds': video_info.duration if video_info else None,
+            'search_status': 'ready' if video_info else 'failed',
         }
 
         session_store.update(session)
@@ -230,7 +209,7 @@ class VideoService:
         Returns:
             Job ID
         """
-        if session.status != "clips_ready":
+        if session.status not in ("clips_ready",):
             raise ValueError("Clips must be confirmed before generating video")
 
         session.status = "generating"
@@ -298,6 +277,145 @@ class VideoService:
                 'status': self._map_rq_status(session.status, session.status),
                 'error_message': session.error_message,
             }
+
+
+def generate_clips_task(session_id: str):
+    """Background task: LLM clip generation + parallel Pexels search with progressive updates."""
+    session = session_store.get(session_id)
+    if not session:
+        raise ValueError(f"Session not found: {session_id}")
+
+    t_total = time.time()
+
+    try:
+        from app.core import ScenePlanner
+        from video_searcher import CachedVideoSearcher
+
+        # --- Stage 1: LLM clip descriptions ---
+        t_llm = time.time()
+        planner = ScenePlanner(
+            provider=settings.llm_provider,
+            model=settings.ollama_model if settings.llm_provider == "ollama" else settings.openrouter_model,
+            base_url=settings.ollama_base_url if settings.llm_provider == "ollama" else settings.openrouter_base_url,
+            api_key=settings.openrouter_api_key if settings.llm_provider == "openrouter" else None,
+            narration_style=settings.narration_style,
+        )
+        duration_minutes = session.duration_seconds / 60
+        plan = planner.generate_clips_from_script(session.script_text, duration_minutes)
+        llm_elapsed = time.time() - t_llm
+        logger.info("Session %s: LLM clip generation took %.1fs (%d clips)",
+                     session_id, llm_elapsed, len(plan.clips))
+
+        # Initialize placeholder clips in session
+        session.clips = [
+            {
+                'index': i,
+                'keywords': clip.keywords,
+                'visual_description': clip.visual_description,
+                'video_preview_url': None,
+                'video_id': None,
+                'author': None,
+                'author_url': None,
+                'duration_seconds': None,
+                'search_status': 'pending',
+            }
+            for i, clip in enumerate(plan.clips)
+        ]
+        session_store.update(session)
+
+        # --- Stage 2: Parallel Pexels searches ---
+        t_search = time.time()
+        redis_client = Redis.from_url(settings.redis_url)
+        searcher = CachedVideoSearcher(
+            api_key=settings.pexels_api_key,
+            redis_client=redis_client,
+            cache_ttl=settings.clip_search_cache_ttl,
+        )
+
+        total_clips = len(plan.clips)
+        completed = 0
+
+        def _search_one(idx, clip):
+            """Search for a single clip. Returns (index, clip_dict)."""
+            try:
+                videos = searcher.search(clip.keywords, max_results=5, orientation=session.orientation)
+                video_info = videos[0] if videos else None
+
+                if not video_info:
+                    # Retry with fewer keywords
+                    if len(clip.keywords) > 2:
+                        videos = searcher.search(clip.keywords[:2], max_results=5, orientation=session.orientation)
+                        video_info = videos[0] if videos else None
+
+                if not video_info:
+                    # Final generic fallback
+                    generic = [clip.keywords[0]] if clip.keywords else ['nature']
+                    videos = searcher.search(generic, max_results=5, orientation=session.orientation)
+                    video_info = videos[0] if videos else None
+
+                return idx, {
+                    'index': idx,
+                    'keywords': clip.keywords,
+                    'visual_description': clip.visual_description,
+                    'video_preview_url': video_info.preview_url if video_info else None,
+                    'video_id': str(video_info.id) if video_info else None,
+                    'author': video_info.author if video_info else None,
+                    'author_url': video_info.url if video_info else None,
+                    'duration_seconds': video_info.duration if video_info else None,
+                    'search_status': 'ready' if video_info else 'failed',
+                    'search_error': None if video_info else 'No matching videos found',
+                }
+            except Exception as e:
+                logger.warning("Clip %d search failed: %s", idx, e)
+                return idx, {
+                    'index': idx,
+                    'keywords': clip.keywords,
+                    'visual_description': clip.visual_description,
+                    'video_preview_url': None,
+                    'video_id': None,
+                    'author': None,
+                    'author_url': None,
+                    'duration_seconds': None,
+                    'search_status': 'failed',
+                    'search_error': str(e),
+                }
+
+        workers = min(settings.clip_search_workers, total_clips)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_search_one, i, clip): i for i, clip in enumerate(plan.clips)}
+            for future in as_completed(futures):
+                idx, clip_dict = future.result()
+                # Write result back by index (preserves ordering)
+                session = session_store.get(session_id)  # re-read to avoid stale overwrites
+                if session and idx < len(session.clips):
+                    session.clips[idx] = clip_dict
+                    session_store.update(session)
+                completed += 1
+
+        search_elapsed = time.time() - t_search
+        total_elapsed = time.time() - t_total
+
+        # Finalize
+        session = session_store.get(session_id)
+        session.status = "clips_ready"
+        session_store.update(session)
+
+        stats = searcher.cache_stats
+        logger.info(
+            "Session %s clip generation complete: %.1fs total (LLM: %.1fs, search: %.1fs), "
+            "%d clips, cache hit rate: %.0f%% (%d hits, %d misses)",
+            session_id, total_elapsed, llm_elapsed, search_elapsed,
+            total_clips, stats['hit_rate'] * 100, stats['hits'], stats['misses'],
+        )
+
+    except Exception as e:
+        logger.exception("Clip generation failed for session %s", session_id)
+        session = session_store.get(session_id)
+        if session:
+            session.status = "script_ready"  # allow retry
+            session.error_message = f"Clip generation failed: {e}"
+            session_store.update(session)
+        raise
 
 
 def generate_video_task(session_id: str):

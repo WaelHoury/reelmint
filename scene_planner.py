@@ -514,12 +514,13 @@ Each scene must have: narration, keywords (2-5 items), target_seconds (3-60), vi
 
         return "\n".join(lines)
 
-    def _generate_narration_only(self, prompt: str, duration_minutes: float,
-                                  words_per_second: float, loop_mode: bool,
-                                  max_retries: int = 3) -> str:
-        """Stage 1: Generate narration text only (no clips).
+    def generate_narration(self, prompt: str, duration_minutes: float,
+                           words_per_second: float, loop_mode: bool = False,
+                           max_retries: int = 3) -> str:
+        """Generate narration text only (no clips).
 
-        Smaller output = more reliable for long videos.
+        Use this when you only need the script and will generate clips
+        separately later via generate_clips_from_script().
 
         Args:
             prompt: User's video topic/description
@@ -822,7 +823,7 @@ Output ONLY the JSON array."""
             print(f"  Using two-stage generation for long video...")
             try:
                 # Stage 1: Generate narration only
-                narration = self._generate_narration_only(
+                narration = self.generate_narration(
                     prompt, duration_minutes, words_per_second, loop_mode, max_retries
                 )
 

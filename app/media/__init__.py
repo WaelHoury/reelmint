@@ -10,7 +10,7 @@ if str(root_dir) not in sys.path:
     sys.path.insert(0, str(root_dir))
 
 from tts_generator import TTSGenerator, transcribe_with_word_timestamps
-from video_searcher import VideoSearcher, VideoInfo
+from video_searcher import VideoSearcher, VideoInfo, CachedVideoSearcher
 from clip_matcher import CLIPMatcher
 from video_assembler import VideoAssembler, get_resolution
 from effects_engine import EffectsEngine
@@ -22,6 +22,7 @@ __all__ = [
     'TTSGenerator',
     'transcribe_with_word_timestamps',
     'VideoSearcher',
+    'CachedVideoSearcher',
     'VideoInfo',
     'CLIPMatcher',
     'VideoAssembler',

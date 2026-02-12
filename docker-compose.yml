@@ -69,6 +69,8 @@ services:
   worker:
     build: .
     command: python run_worker.py
+    cpus: "2.0"
+    mem_limit: "4g"
     deploy:
       replicas: 4
     environment:
