@@ -12,6 +12,7 @@ from PIL import Image
 import subprocess
 import json
 import hashlib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class CLIPMatcher:
@@ -255,6 +256,9 @@ class CLIPMatcher:
     def score_videos(self, video_paths: List[Path], scene_text: str) -> Dict[Path, float]:
         """Score multiple videos against scene text description.
 
+        Parallelizes frame extraction (I/O-bound ffmpeg calls) across all
+        candidate videos, then computes CLIP similarity scores.
+
         Args:
             video_paths: List of video file paths
             scene_text: Text description to match against
@@ -265,20 +269,29 @@ class CLIPMatcher:
         # Encode text once
         text_embedding = self._encode_text(scene_text)
 
+        video_paths = [Path(p) for p in video_paths]
+
+        # Extract frame embeddings in parallel (ffmpeg subprocess is the bottleneck)
+        embeddings_map = {}
+        with ThreadPoolExecutor(max_workers=len(video_paths)) as pool:
+            futures = {
+                pool.submit(self._get_frame_embeddings, vp): vp
+                for vp in video_paths
+            }
+            for future in as_completed(futures):
+                vp = futures[future]
+                try:
+                    embeddings_map[vp] = future.result()
+                except Exception:
+                    pass  # Skip videos that fail
+
+        # Compute similarity scores
         scores = {}
-
         for video_path in video_paths:
-            video_path = Path(video_path)
-
-            # Get frame embeddings (cached or computed)
-            frame_embeddings = self._get_frame_embeddings(video_path)
-
-            # Average frame embeddings
-            video_embedding = frame_embeddings.mean(dim=0, keepdim=True)
-
-            # Compute similarity
+            if video_path not in embeddings_map:
+                continue
+            video_embedding = embeddings_map[video_path].mean(dim=0, keepdim=True)
             similarity = (video_embedding @ text_embedding.T).item()
-
             scores[video_path] = similarity
 
         return scores

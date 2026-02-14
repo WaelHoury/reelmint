@@ -25,7 +25,12 @@ soundfile
 # Utilities
 python-dotenv
 tqdm
+slowapi
 
-# Optional (for Phase 2+)
-# aiohttp
-# pytest
+# Database
+alembic
+psycopg2-binary
+
+# Auth
+google-auth
+python-jose[cryptography]

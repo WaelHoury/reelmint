@@ -6,12 +6,12 @@ Usage:
 
 import argparse
 import threading
+import time
 from pathlib import Path
 import os
 from dotenv import load_dotenv
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from tqdm import tqdm
 
 from scene_planner import ScenePlanner
 from tts_generator import TTSGenerator
@@ -25,7 +25,12 @@ from subtitle_generator import SubtitleGenerator
 def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                    orientation: str = 'landscape',
                    temp_dir: Path = None, keep_temp: bool = False,
-                   script_text: str = None) -> Path:
+                   script_text: str = None,
+                   progress_callback=None,
+                   narration_style: str = None,
+                   subtitle_settings: dict = None,
+                   intermediate_callback=None,
+                   pre_selected_clips: list = None) -> Path:
     """Generate video from text prompt or script.
 
     Args:
@@ -36,6 +41,11 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         temp_dir: Temporary working directory
         keep_temp: Keep temporary files after completion
         script_text: Optional user-provided narration script (bypasses LLM narration generation)
+        progress_callback: Optional function(percent: int, step: str) called at each stage
+        narration_style: Optional narration style override (viral, informative, funny, etc.)
+        subtitle_settings: Optional dict to override subtitle style (font, font_size, color, etc.)
+        intermediate_callback: Optional function(data: dict) called with intermediate file paths for re-generation
+        pre_selected_clips: Optional list of clip dicts from wizard (skips LLM + CLIP scoring)
 
     Returns:
         Path to generated video file
@@ -43,6 +53,10 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
     Raises:
         Exception: If any step fails
     """
+    def _report(percent, step):
+        if progress_callback:
+            progress_callback(percent, step)
+
     output_path = Path(output_path)
 
     # Setup temp directory
@@ -68,22 +82,34 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
 
-        narration_style = os.getenv("NARRATION_STYLE", "viral").lower()
+        narration_style = narration_style or os.getenv("NARRATION_STYLE", "viral").lower()
 
-        if llm_provider == "openrouter":
-            planner = ScenePlanner(
-                provider="openrouter",
-                model=os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-001"),
-                base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-                api_key=os.getenv("OPENROUTER_API_KEY"),
-                narration_style=narration_style,
-            )
-        else:
-            planner = ScenePlanner(
-                provider="ollama",
-                model=os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
-                base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-                narration_style=narration_style,
+        # Skip ScenePlanner and CLIPMatcher when clips are pre-selected (saves LLM + model load time)
+        planner = None
+        matcher = None
+        if not pre_selected_clips:
+            if llm_provider == "openrouter":
+                planner = ScenePlanner(
+                    provider="openrouter",
+                    model=os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-001"),
+                    base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+                    api_key=os.getenv("OPENROUTER_API_KEY"),
+                    narration_style=narration_style,
+                )
+            else:
+                planner = ScenePlanner(
+                    provider="ollama",
+                    model=os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
+                    base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+                    narration_style=narration_style,
+                )
+
+            matcher = CLIPMatcher(
+                model_name=os.getenv("CLIP_MODEL", "ViT-B-32"),
+                pretrained=os.getenv("CLIP_PRETRAINED", "laion2b_s34b_b79k"),
+                cache_dir=Path(os.getenv("CACHE_DIR", "cache")),
+                ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
+                ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
             )
 
         tts = TTSGenerator(
@@ -107,14 +133,6 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         searcher = VideoSearcher(api_key=os.getenv("PEXELS_API_KEY"))
 
-        matcher = CLIPMatcher(
-            model_name=os.getenv("CLIP_MODEL", "ViT-B-32"),
-            pretrained=os.getenv("CLIP_PRETRAINED", "laion2b_s34b_b79k"),
-            cache_dir=Path(os.getenv("CACHE_DIR", "cache")),
-            ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
-            ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
-        )
-
         assembler = VideoAssembler(
             ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
             ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
@@ -123,7 +141,10 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         tracker = LicenseTracker()
 
         # Step 1: Generate video plan (continuous narration + visual clips)
+        _step_times = {}
+        _t0 = time.time()
         print("\n[1/5] Generating video plan...")
+        _report(10, "Generating video plan...")
 
         # Adjust words-per-second target based on TTS engine and speed settings.
         # Manual override takes priority; otherwise use engine-specific defaults.
@@ -142,8 +163,19 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         loop_mode = os.getenv("ENABLE_VIDEO_LOOP", "false").lower() == "true"
 
-        # Branch based on script vs prompt
-        if script_text:
+        if pre_selected_clips and script_text:
+            # Clips already selected in wizard — skip LLM call entirely
+            from scene_planner import VisualClip, VideoPlan
+            print("  Using pre-selected clips from wizard (skipping LLM)")
+            plan_clips = [
+                VisualClip(
+                    keywords=c.get('keywords', ['stock', 'footage']),
+                    visual_description=c.get('visual_description', 'stock footage')
+                )
+                for c in pre_selected_clips
+            ]
+            plan = VideoPlan(narration=script_text, clips=plan_clips)
+        elif script_text:
             # User provided script - use as-is, generate only visual clips
             print("  Using user-provided script (no LLM narration modification)")
             plan = planner.generate_clips_from_script(script_text, duration_minutes)
@@ -154,22 +186,26 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                                                loop_mode=loop_mode)
 
         # Print token usage report (OpenRouter only)
-        if llm_provider == "openrouter":
+        if not pre_selected_clips and llm_provider == "openrouter":
             print(planner.get_token_report())
 
         # Print plan preview with Unicode-safe encoding for Windows
-        try:
-            print(planner.preview_continuous_plan(plan))
-        except UnicodeEncodeError:
-            preview = planner.preview_continuous_plan(plan)
-            print(preview.encode('ascii', errors='replace').decode('ascii'))
+        if not pre_selected_clips:
+            try:
+                print(planner.preview_continuous_plan(plan))
+            except UnicodeEncodeError:
+                preview = planner.preview_continuous_plan(plan)
+                print(preview.encode('ascii', errors='replace').decode('ascii'))
+        else:
+            print(f"  Script: {len(script_text.split())} words")
+            print(f"  Clips: {len(pre_selected_clips)} pre-selected")
 
         # Save LLM output to text file
         output_txt = Path(output_path).with_suffix('.txt')
         try:
             with open(output_txt, 'w', encoding='utf-8') as f:
                 f.write("=" * 70 + "\n")
-                f.write("LLM OUTPUT - VIDEO PLAN\n")
+                f.write("VIDEO PLAN" + (" (pre-selected clips)" if pre_selected_clips else " (LLM)") + "\n")
                 f.write("=" * 70 + "\n\n")
 
                 f.write("NARRATION SCRIPT:\n")
@@ -190,7 +226,10 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             print(f"  Warning: Could not save LLM output to file: {e}")
 
         # Step 2: Generate continuous narration audio with word timestamps
+        _step_times['1_plan'] = time.time() - _t0
+        _t0 = time.time()
         print("\n[2/5] Generating narration audio...")
+        _report(25, "Generating narration audio...")
         narration_raw = temp_dir / "narration_raw.wav"
         narration_audio = temp_dir / "narration.wav"
 
@@ -233,13 +272,10 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             print(f"  Using heuristic timestamps (offset={subtitle_offset}s)")
 
         # Step 3: Search, download, and score video clips
-        print("\n[3/5] Searching and scoring videos...")
-        trimmed_videos = []
-        used_video_ids = set()
-
+        _step_times['2_tts_asr'] = time.time() - _t0
+        _t0 = time.time()
         enable_color_grading = os.getenv("ENABLE_COLOR_GRADING", "true").lower() == "true"
         color_preset = os.getenv("COLOR_PRESET", "balanced")
-        candidates_count = int(os.getenv("CLIP_CANDIDATES", "5"))
 
         # Pre-compute color grade filter once
         color_grade_filter = None
@@ -266,79 +302,179 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         print(f"  {num_clips} clips x {clip_duration:.1f}s each (incl. {transition_overlap:.1f}s transition overlap)")
 
-        def _download_candidate(args):
-            vid_info, dl_path = args
-            searcher.download(vid_info, dl_path)
-            return {'path': dl_path, 'info': vid_info}
+        clip_lock = threading.Lock()
 
-        for i, clip in enumerate(tqdm(plan.clips, desc="Clips")):
-            clip_dir = temp_dir / f"clip_{i}"
-            clip_dir.mkdir(exist_ok=True)
+        if pre_selected_clips:
+            # Fast path: download pre-selected clips directly (no search, no CLIP scoring)
+            print("\n[3/5] Downloading selected clips...")
+            _report(35, "Downloading selected clips...")
 
-            print(f"\n  Clip {i+1}/{num_clips}: Searching for {clip.keywords}...")
-            videos = searcher.search(clip.keywords, max_results=20, orientation=orientation)
+            clip_results = [None] * num_clips
 
-            if not videos:
-                # Fallback: try broader search with first keyword only
-                print(f"    Warning: No videos found, trying broader search...")
-                videos = searcher.search(clip.keywords[:1], max_results=20, orientation=orientation)
+            def _process_preselected_clip(i, clip_data):
+                clip_dir = temp_dir / f"clip_{i}"
+                clip_dir.mkdir(exist_ok=True)
 
-            if not videos:
-                raise ValueError(f"No videos found for clip {i} keywords: {clip.keywords}")
+                video_id = clip_data.get('video_id')
+                preview_url = clip_data.get('video_preview_url')
+                keywords = clip_data.get('keywords', [])
 
-            # Filter out duplicates
-            available_videos = [v for v in videos if v.id not in used_video_ids]
-            if not available_videos:
-                available_videos = videos
+                print(f"\n  Clip {i+1}/{num_clips}: Downloading (Pexels ID: {video_id})...")
 
-            # Download candidates in parallel
-            downloaded = []
-            with ThreadPoolExecutor(max_workers=4) as dl_pool:
-                dl_futures = []
-                for j, video_info in enumerate(available_videos[:candidates_count]):
-                    download_path = clip_dir / f"candidate_{j}.mp4"
-                    dl_futures.append(dl_pool.submit(_download_candidate, (video_info, download_path)))
+                # Fetch fresh video info by ID, fallback to stored preview URL
+                download_path = clip_dir / "selected.mp4"
+                video_info = None
 
-                for future in as_completed(dl_futures):
-                    try:
-                        downloaded.append(future.result())
-                    except Exception as e:
-                        print(f"    Warning: Download failed: {e}")
+                if video_id:
+                    video_info = searcher.get_video_by_id(video_id)
 
-            if not downloaded:
-                raise ValueError(f"Failed to download any videos for clip {i}")
+                if video_info:
+                    searcher.download(video_info, download_path)
+                elif preview_url:
+                    # Fallback: download directly from stored URL
+                    import requests as _requests
+                    print(f"    Using cached preview URL...")
+                    resp = _requests.get(preview_url, stream=True, timeout=30)
+                    resp.raise_for_status()
+                    with open(download_path, 'wb') as f:
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                else:
+                    raise ValueError(f"No video ID or URL for clip {i}")
 
-            # Score with CLIP
-            score_text = f"{clip.visual_description}. {' '.join(clip.keywords)}"
-            video_paths = [d['path'] for d in downloaded]
+                # Track asset
+                asset_info = {
+                    'url': clip_data.get('author_url', ''),
+                    'author': clip_data.get('author', 'Unknown'),
+                    'provider': 'Pexels',
+                    'license': 'Pexels License'
+                }
+                with clip_lock:
+                    tracker.add_asset(asset_info, i)
 
-            print(f"  Scoring {len(video_paths)} videos with CLIP...")
-            scores = matcher.score_videos(video_paths, score_text)
+                # Process clip: normalize + color grade + trim
+                trimmed_path = clip_dir / "trimmed.mp4"
+                assembler.process_clip(
+                    download_path, trimmed_path,
+                    duration_sec=clip_duration,
+                    color_grade_filter=color_grade_filter,
+                    orientation=orientation
+                )
 
-            best_path = max(scores, key=scores.get)
-            best_score = scores[best_path]
-            best_info = next(d['info'] for d in downloaded if d['path'] == best_path)
+                print(f"  Clip {i+1}/{num_clips} done")
+                return trimmed_path
 
-            print(f"  Best match: score={best_score:.3f}")
+            with ThreadPoolExecutor(max_workers=4) as clip_pool:
+                futures = {
+                    clip_pool.submit(_process_preselected_clip, i, clip_data): i
+                    for i, clip_data in enumerate(pre_selected_clips)
+                }
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    clip_results[idx] = future.result()
 
-            tracker.add_asset(best_info.to_dict(), i)
-            used_video_ids.add(best_info.id)
+            trimmed_videos = clip_results
 
-            # Single-pass: normalize + color grade + trim
-            trimmed_path = clip_dir / "trimmed.mp4"
-            assembler.process_clip(
-                best_path, trimmed_path,
-                duration_sec=clip_duration,
-                color_grade_filter=color_grade_filter,
-                orientation=orientation
-            )
+        else:
+            # Full path: search Pexels, download candidates, score with CLIP
+            print("\n[3/5] Searching and scoring videos...")
+            _report(35, "Searching and scoring videos...")
+            used_video_ids = set()
+            candidates_count = int(os.getenv("CLIP_CANDIDATES", "5"))
 
-            trimmed_videos.append(trimmed_path)
+            clip_results = [None] * num_clips
 
-            # Clean up candidates
-            for d in downloaded:
-                if d['path'] != best_path and d['path'].exists():
-                    d['path'].unlink()
+            def _download_candidate(args):
+                vid_info, dl_path = args
+                searcher.download(vid_info, dl_path)
+                return {'path': dl_path, 'info': vid_info}
+
+            def _process_clip(i, clip):
+                clip_dir = temp_dir / f"clip_{i}"
+                clip_dir.mkdir(exist_ok=True)
+
+                print(f"\n  Clip {i+1}/{num_clips}: Searching for {clip.keywords}...")
+                videos = searcher.search(clip.keywords, max_results=20, orientation=orientation)
+
+                if not videos:
+                    print(f"    Warning: No videos found, trying broader search...")
+                    videos = searcher.search(clip.keywords[:1], max_results=20, orientation=orientation)
+
+                if not videos:
+                    raise ValueError(f"No videos found for clip {i} keywords: {clip.keywords}")
+
+                # Filter out duplicates (thread-safe read)
+                with clip_lock:
+                    available_videos = [v for v in videos if v.id not in used_video_ids]
+                if not available_videos:
+                    available_videos = videos
+
+                # Download candidates in parallel
+                downloaded = []
+                with ThreadPoolExecutor(max_workers=4) as dl_pool:
+                    dl_futures = []
+                    for j, video_info in enumerate(available_videos[:candidates_count]):
+                        download_path = clip_dir / f"candidate_{j}.mp4"
+                        dl_futures.append(dl_pool.submit(_download_candidate, (video_info, download_path)))
+
+                    for future in as_completed(dl_futures):
+                        try:
+                            downloaded.append(future.result())
+                        except Exception as e:
+                            print(f"    Warning: Download failed: {e}")
+
+                if not downloaded:
+                    raise ValueError(f"Failed to download any videos for clip {i}")
+
+                # Score with CLIP (frame extraction parallelized internally)
+                score_text = f"{clip.visual_description}. {' '.join(clip.keywords)}"
+                video_paths = [d['path'] for d in downloaded]
+
+                print(f"    Scoring {len(video_paths)} candidates with CLIP...")
+                scores = matcher.score_videos(video_paths, score_text)
+
+                best_path = max(scores, key=scores.get)
+                best_score = scores[best_path]
+                best_info = next(d['info'] for d in downloaded if d['path'] == best_path)
+
+                print(f"    Best match: score={best_score:.3f}")
+
+                # Track asset (thread-safe)
+                with clip_lock:
+                    tracker.add_asset(best_info.to_dict(), i)
+                    used_video_ids.add(best_info.id)
+
+                # Single-pass: normalize + color grade + trim
+                trimmed_path = clip_dir / "trimmed.mp4"
+                assembler.process_clip(
+                    best_path, trimmed_path,
+                    duration_sec=clip_duration,
+                    color_grade_filter=color_grade_filter,
+                    orientation=orientation
+                )
+
+                # Clean up candidates
+                for d in downloaded:
+                    if d['path'] != best_path and d['path'].exists():
+                        d['path'].unlink()
+
+                print(f"  Clip {i+1}/{num_clips} done")
+                return trimmed_path
+
+            with ThreadPoolExecutor(max_workers=4) as clip_pool:
+                futures = {
+                    clip_pool.submit(_process_clip, i, clip): i
+                    for i, clip in enumerate(plan.clips)
+                }
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    clip_results[idx] = future.result()
+
+            trimmed_videos = clip_results
+
+        # Save original trimmed clips BEFORE loop/outro modification (for editor persistence)
+        original_trimmed_videos = list(trimmed_videos)
 
         # Loop mode: replace last clip with a copy of the first clip
         if loop_mode and len(trimmed_videos) >= 2:
@@ -360,14 +496,16 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 extended_path = last_clip_dir / "extended_outro.mp4"
 
                 import subprocess
+                from app.core.config import settings as _cfg
                 cmd = [
                     os.getenv("FFMPEG_PATH", "ffmpeg"),
                     '-i', str(last_video),
                     '-vf', f'tpad=stop_mode=clone:stop_duration={outro_duration}',
                     '-c:v', 'libx264',
-                    '-preset', 'fast',
-                    '-crf', '23',
+                    '-preset', _cfg.ffmpeg_intermediate_preset,
+                    '-crf', str(_cfg.ffmpeg_intermediate_crf),
                     '-pix_fmt', 'yuv420p',
+                    '-threads', str(_cfg.ffmpeg_threads),
                     '-an',
                     '-y',
                     str(extended_path)
@@ -376,21 +514,15 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 trimmed_videos[-1] = extended_path
 
         # Step 4: Assemble final video
+        _step_times['3_clips'] = time.time() - _t0
+        _t0 = time.time()
         print("\n[4/5] Assembling final video...")
+        _report(75, "Assembling final video...")
 
-        # Concatenate video clips with transitions
         transition_type = os.getenv("TRANSITION_TYPE", "crossfade")
 
-        print(f"  Concatenating {len(trimmed_videos)} clips with {transition_type} transitions...")
-        video_no_audio = temp_dir / "video_no_audio.mp4"
-        assembler.concat_videos_with_transitions(
-            trimmed_videos,
-            video_no_audio,
-            transition=transition_type,
-            transition_duration=transition_duration
-        )
-
         # Add background music if enabled
+        music_file = None
         final_audio = narration_audio
         if os.getenv("ENABLE_BACKGROUND_MUSIC", "true").lower() == "true":
             print("  Mixing background music...")
@@ -421,73 +553,49 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 print(f"    Warning: {e}")
                 print(f"    Continuing without background music")
 
-        # Mux audio and video
-        print("  Muxing audio and video...")
+        # Prepare subscribe overlay if enabled
         needs_overlay = os.getenv("ENABLE_SUBSCRIBE_OVERLAY", "false").lower() == "true"
         needs_subtitles = os.getenv("ENABLE_SUBTITLES", "true").lower() == "true"
 
-        if needs_overlay or needs_subtitles:
-            video_after_mux = temp_dir / "video_muxed.mp4"
-        else:
-            video_after_mux = output_path
-        assembler.mux_audio(video_no_audio, final_audio, video_after_mux)
-
-        # Apply subscribe button overlay if enabled
+        subscribe_video_path = None
+        subscribe_params = None
         if needs_overlay:
             subscribe_path = Path(os.getenv("SUBSCRIBE_VIDEO_PATH", "subscribe.mp4"))
             if not subscribe_path.is_absolute():
                 subscribe_path = Path(__file__).parent / subscribe_path
-
             if subscribe_path.exists():
-                print("  Adding subscribe button overlay...")
-                from effects_engine import EffectsEngine as _EE
-                overlay_effects = _EE(
-                    ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
-                    ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
-                )
-
-                video_after_overlay = temp_dir / "video_overlaid.mp4" if needs_subtitles else output_path
-                overlay_effects.apply_subscribe_overlay(
-                    input_video=video_after_mux,
-                    subscribe_video=subscribe_path,
-                    output_video=video_after_overlay,
-                    orientation=orientation,
-                    scale=float(os.getenv("SUBSCRIBE_SCALE", "0")) or None,
-                    margin_bottom=int(os.getenv("SUBSCRIBE_MARGIN_BOTTOM", "50")),
-                    chromakey_color=os.getenv("SUBSCRIBE_CHROMAKEY_COLOR", "0x00FF00"),
-                    chromakey_similarity=float(os.getenv("SUBSCRIBE_CHROMAKEY_SIMILARITY", "0.3")),
-                    chromakey_blend=float(os.getenv("SUBSCRIBE_CHROMAKEY_BLEND", "0.15")),
-                )
-                if video_after_mux.exists() and video_after_mux != output_path:
-                    video_after_mux.unlink()
-                video_without_subs = video_after_overlay
+                subscribe_video_path = subscribe_path
+                subscribe_params = {
+                    'orientation': orientation,
+                    'scale': float(os.getenv("SUBSCRIBE_SCALE", "0")) or None,
+                    'margin_bottom': int(os.getenv("SUBSCRIBE_MARGIN_BOTTOM", "50")),
+                    'chromakey_color': os.getenv("SUBSCRIBE_CHROMAKEY_COLOR", "0x00FF00"),
+                    'chromakey_similarity': float(os.getenv("SUBSCRIBE_CHROMAKEY_SIMILARITY", "0.3")),
+                    'chromakey_blend': float(os.getenv("SUBSCRIBE_CHROMAKEY_BLEND", "0.15")),
+                }
             else:
                 print(f"    Warning: Subscribe video not found at {subscribe_path}, skipping overlay")
-                video_without_subs = video_after_mux
-        else:
-            video_without_subs = video_after_mux
 
-        # Add subtitles if enabled
+        # Generate subtitle file if enabled
+        subtitle_file = None
         if needs_subtitles:
-            print("  Adding subtitles...")
+            print("  Generating subtitles...")
 
             sub_gen = SubtitleGenerator(
                 style=os.getenv("SUBTITLE_STYLE", "youtube"),
-                orientation=orientation
+                orientation=orientation,
+                custom_overrides=subtitle_settings,
             )
-            subtitle_path = temp_dir / "subtitles.ass"
+            subtitle_file = temp_dir / "subtitles.ass"
 
             if word_timestamps:
                 if orientation in ('portrait', 'square'):
-                    # Word-by-word karaoke subtitles with highlighting for portrait/square
                     print(f"  Using karaoke-style subtitles (phrase grouping with highlight)...")
-                    sub_gen.generate_karaoke_ass(word_timestamps, subtitle_path)
+                    sub_gen.generate_karaoke_ass(word_timestamps, subtitle_file)
                 else:
-                    # Landscape: phrase-based subtitles (2-3 words at a time, no highlight)
                     print(f"  Using phrase-based subtitles (2-3 words, accurate sync)...")
-                    sub_gen.generate_phrase_ass(word_timestamps, subtitle_path)
+                    sub_gen.generate_phrase_ass(word_timestamps, subtitle_file)
             else:
-                # Fallback: no word timestamps available, use sentence-based estimation
                 import re as _re
                 sentences = _re.split(r'(?<=[.!?])\s+', plan.narration.strip())
                 sentences = [s for s in sentences if s.strip()]
@@ -507,45 +615,86 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                         })
                         current_time += duration
 
-                    sub_gen.generate_ass(subtitle_scenes, subtitle_path)
+                    sub_gen.generate_ass(subtitle_scenes, subtitle_file)
                 else:
-                    # Fallback: show entire narration
                     sub_gen.generate_ass([{
                         'narration': plan.narration,
                         'start_time': 0.0,
                         'duration': total_duration
-                    }], subtitle_path)
+                    }], subtitle_file)
 
-            print("  Burning subtitles into video...")
-            sub_gen.burn_subtitles(video_without_subs, subtitle_path, output_path)
-
-            if video_without_subs.exists() and video_without_subs != output_path:
-                video_without_subs.unlink()
-
-        # Apply fade-to-black for non-loop videos to avoid abrupt ending
+        # Determine fade-out duration
+        fade_dur = 0
         if not loop_mode:
-            fade_duration = float(os.getenv("FADE_OUT_DURATION", "1.0"))
-            if fade_duration > 0:
-                print("  Applying fade-out to end of video...")
-                from effects_engine import EffectsEngine as _EE
-                fade_effects = _EE(
-                    ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
-                    ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
-                )
-                faded_path = temp_dir / "video_faded.mp4"
-                fade_effects.apply_fade_out(output_path, faded_path, fade_duration=fade_duration)
-                # Replace output with faded version
-                faded_path.replace(output_path)
+            fade_dur = float(os.getenv("FADE_OUT_DURATION", "1.0"))
+
+        # Single-pass: concat clips + mux audio + subtitles + fade (no intermediate encode)
+        from effects_engine import EffectsEngine
+        finalizer = EffectsEngine(
+            ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
+            ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
+        )
+
+        effects_summary = ["xfade transitions"]
+        if subscribe_video_path:
+            effects_summary.append("overlay")
+        if subtitle_file:
+            effects_summary.append("subtitles")
+        if fade_dur > 0:
+            effects_summary.append(f"fade-out ({fade_dur}s)")
+
+        print(f"  Assembling {len(trimmed_videos)} clips ({' + '.join(effects_summary)}) in single pass...")
+
+        finalizer.concat_and_finalize(
+            clips=trimmed_videos,
+            audio_path=final_audio,
+            output_path=output_path,
+            transition=transition_type,
+            transition_duration=transition_duration,
+            subtitle_path=subtitle_file,
+            subscribe_video=subscribe_video_path,
+            subscribe_params=subscribe_params,
+            fade_duration=fade_dur,
+        )
+
+        # Save intermediate data for subtitle re-generation and editor
+        if intermediate_callback:
+            intermediate_callback({
+                'temp_dir': str(temp_dir),
+                'final_audio': str(final_audio),
+                'narration_audio': str(narration_audio),
+                'music_file': str(music_file) if music_file else None,
+                'word_timestamps': word_timestamps,
+                'trimmed_clips': [str(p) for p in original_trimmed_videos],
+                'clip_duration': clip_duration,
+                'transition_duration': transition_duration,
+            })
 
         # Generate credits
+        _step_times['4_assemble'] = time.time() - _t0
+        _t0 = time.time()
         print("\n[5/5] Generating credits...")
+        _report(95, "Generating credits...")
         credits_path = output_path.parent / f"{output_path.stem}_credits.txt"
         tracker.export_credits_txt(credits_path)
 
         credits_json = output_path.parent / f"{output_path.stem}_credits.json"
         tracker.export_credits_json(credits_json)
 
+        _step_times['5_credits'] = time.time() - _t0
+
+        # Print timing breakdown to identify bottlenecks
+        total_time = sum(_step_times.values())
         print(f"\n{'='*70}")
+        print("TIMING BREAKDOWN:")
+        print(f"  [1] LLM Plan:        {_step_times.get('1_plan', 0):6.1f}s")
+        print(f"  [2] TTS + ASR:       {_step_times.get('2_tts_asr', 0):6.1f}s")
+        print(f"  [3] Clip Search/DL:  {_step_times.get('3_clips', 0):6.1f}s")
+        print(f"  [4] Assemble/Encode: {_step_times.get('4_assemble', 0):6.1f}s")
+        print(f"  [5] Credits:         {_step_times.get('5_credits', 0):6.1f}s")
+        print(f"  {'─'*35}")
+        print(f"  TOTAL:               {total_time:6.1f}s")
+        print(f"{'='*70}")
         print("SUCCESS!")
         print(f"Video: {output_path}")
         print(f"Credits: {credits_path}")

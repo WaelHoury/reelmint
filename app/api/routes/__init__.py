@@ -1,0 +1,21 @@
+"""API route modules."""
+
+from .sessions import router as sessions_router
+from .scripts import router as scripts_router
+from .clips import router as clips_router
+from .videos import router as videos_router
+from .config import router as config_router
+from .auth import router as auth_router
+from .library import router as library_router
+from .editor import router as editor_router
+
+__all__ = [
+    'sessions_router',
+    'scripts_router',
+    'clips_router',
+    'videos_router',
+    'config_router',
+    'auth_router',
+    'library_router',
+    'editor_router',
+]

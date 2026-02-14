@@ -173,12 +173,40 @@ class KaraokeStyle:
 class SubtitleGenerator:
     """Generates subtitle files for video captions."""
 
-    def __init__(self, style: str = 'youtube', orientation: str = 'landscape'):
+    # Maps position names to ASS alignment values
+    POSITION_MAP = {
+        'bottom': 2,    # Bottom center
+        'center': 5,    # Center center
+        'top': 8,       # Top center
+    }
+
+    @staticmethod
+    def hex_to_ass_color(hex_color: str) -> str:
+        """Convert hex color (#RRGGBB or #RRGGBBAA) to ASS color (&H00BBGGRR).
+
+        Args:
+            hex_color: Hex color string like '#FFFFFF' or '#FF0000'
+
+        Returns:
+            ASS BGR color string like '&H00FFFFFF'
+        """
+        hex_color = hex_color.lstrip('#')
+        if len(hex_color) >= 6:
+            r = hex_color[0:2]
+            g = hex_color[2:4]
+            b = hex_color[4:6]
+            return f'&H00{b.upper()}{g.upper()}{r.upper()}'
+        return '&H00FFFFFF'
+
+    def __init__(self, style: str = 'youtube', orientation: str = 'landscape',
+                 custom_overrides: dict = None):
         """Initialize subtitle generator.
 
         Args:
             style: Style preset ('youtube', 'tiktok', 'minimal')
             orientation: Video orientation ('landscape', 'portrait', 'square')
+            custom_overrides: Optional dict to override preset values.
+                Supported keys: font, font_size, color (#hex), outline_color (#hex), position (bottom/center/top)
         """
         self.style_name = style
         self.orientation = orientation
@@ -188,10 +216,30 @@ class SubtitleGenerator:
 
         # Select orientation-specific settings
         if orientation in style_dict:
-            self.style = style_dict[orientation]
+            self.style = dict(style_dict[orientation])  # copy so we don't mutate the class
         else:
             # Fallback to landscape if orientation not found
-            self.style = style_dict.get('landscape', style_dict)
+            self.style = dict(style_dict.get('landscape', style_dict))
+
+        # Apply custom overrides
+        if custom_overrides:
+            if 'font' in custom_overrides and custom_overrides['font']:
+                self.style['font'] = custom_overrides['font']
+            if 'font_size' in custom_overrides and custom_overrides['font_size']:
+                self.style['font_size'] = int(custom_overrides['font_size'])
+            if 'color' in custom_overrides and custom_overrides['color']:
+                self.style['primary_color'] = self.hex_to_ass_color(custom_overrides['color'])
+            if 'outline_color' in custom_overrides and custom_overrides['outline_color']:
+                self.style['outline_color'] = self.hex_to_ass_color(custom_overrides['outline_color'])
+            if 'position' in custom_overrides and custom_overrides['position']:
+                self.style['alignment'] = self.POSITION_MAP.get(
+                    custom_overrides['position'], self.style.get('alignment', 2)
+                )
+                # Adjust margin_v based on position
+                if custom_overrides['position'] == 'center':
+                    self.style['margin_v'] = 0
+                elif custom_overrides['position'] == 'top':
+                    self.style['margin_v'] = 60
 
     def generate_srt(self, scenes: List[Dict], output_path: Path) -> Path:
         """Generate SRT subtitle file from scenes.
