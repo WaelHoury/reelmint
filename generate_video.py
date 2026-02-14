@@ -365,7 +365,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 print(f"  Clip {i+1}/{num_clips} done")
                 return trimmed_path
 
-            with ThreadPoolExecutor(max_workers=2) as clip_pool:
+            with ThreadPoolExecutor(max_workers=4) as clip_pool:
                 futures = {
                     clip_pool.submit(_process_preselected_clip, i, clip_data): i
                     for i, clip_data in enumerate(pre_selected_clips)
@@ -462,7 +462,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 print(f"  Clip {i+1}/{num_clips} done")
                 return trimmed_path
 
-            with ThreadPoolExecutor(max_workers=2) as clip_pool:
+            with ThreadPoolExecutor(max_workers=4) as clip_pool:
                 futures = {
                     clip_pool.submit(_process_clip, i, clip): i
                     for i, clip in enumerate(plan.clips)
@@ -519,17 +519,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         print("\n[4/5] Assembling final video...")
         _report(75, "Assembling final video...")
 
-        # Concatenate video clips with transitions
         transition_type = os.getenv("TRANSITION_TYPE", "crossfade")
-
-        print(f"  Concatenating {len(trimmed_videos)} clips with {transition_type} transitions...")
-        video_no_audio = temp_dir / "video_no_audio.mp4"
-        assembler.concat_videos_with_transitions(
-            trimmed_videos,
-            video_no_audio,
-            transition=transition_type,
-            transition_duration=transition_duration
-        )
 
         # Add background music if enabled
         music_file = None
@@ -638,14 +628,14 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         if not loop_mode:
             fade_dur = float(os.getenv("FADE_OUT_DURATION", "1.0"))
 
-        # Finalize: mux audio + overlay + subtitles + fade in a single FFmpeg pass
+        # Single-pass: concat clips + mux audio + subtitles + fade (no intermediate encode)
         from effects_engine import EffectsEngine
         finalizer = EffectsEngine(
             ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
             ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
         )
 
-        effects_summary = []
+        effects_summary = ["xfade transitions"]
         if subscribe_video_path:
             effects_summary.append("overlay")
         if subtitle_file:
@@ -653,15 +643,14 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         if fade_dur > 0:
             effects_summary.append(f"fade-out ({fade_dur}s)")
 
-        if effects_summary:
-            print(f"  Finalizing video (mux + {' + '.join(effects_summary)}) in single pass...")
-        else:
-            print("  Muxing audio and video...")
+        print(f"  Assembling {len(trimmed_videos)} clips ({' + '.join(effects_summary)}) in single pass...")
 
-        finalizer.finalize_video(
-            video_no_audio=video_no_audio,
+        finalizer.concat_and_finalize(
+            clips=trimmed_videos,
             audio_path=final_audio,
             output_path=output_path,
+            transition=transition_type,
+            transition_duration=transition_duration,
             subtitle_path=subtitle_file,
             subscribe_video=subscribe_video_path,
             subscribe_params=subscribe_params,
@@ -672,7 +661,6 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         if intermediate_callback:
             intermediate_callback({
                 'temp_dir': str(temp_dir),
-                'video_no_audio': str(video_no_audio),
                 'final_audio': str(final_audio),
                 'narration_audio': str(narration_audio),
                 'music_file': str(music_file) if music_file else None,

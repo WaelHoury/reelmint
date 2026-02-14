@@ -20,6 +20,8 @@ class JobStatusResponse(BaseModel):
     estimated_remaining_seconds: Optional[int] = Field(default=None)
     error_message: Optional[str] = Field(default=None)
     output_url: Optional[str] = Field(default=None, description="URL to download video when completed")
+    queue_position: Optional[int] = Field(default=None, description="Position in queue (1-based, only when queued)")
+    queue_length: Optional[int] = Field(default=None, description="Total jobs in queue (only when queued)")
 
 
 class VideoDownloadResponse(BaseModel):

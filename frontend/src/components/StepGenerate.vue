@@ -18,6 +18,8 @@ const progressPercent = ref(0)
 const currentStep = ref('')
 const errorMessage = ref('')
 const jobId = ref(null)
+const queuePosition = ref(null)
+const queueLength = ref(null)
 let pollTimer = null
 
 // Video player
@@ -128,6 +130,8 @@ function startPolling() {
       progressPercent.value = data.progress_percent || 0
       currentStep.value = data.current_step || ''
       errorMessage.value = data.error_message || ''
+      queuePosition.value = data.queue_position ?? null
+      queueLength.value = data.queue_length ?? null
 
       if (data.status === 'completed' || data.status === 'failed') {
         clearInterval(pollTimer)
@@ -185,7 +189,10 @@ async function applySubtitleChanges() {
         <el-icon :size="48" color="var(--ce-purple-light)"><Loading /></el-icon>
       </div>
       <h3 class="progress-heading">{{ status === 'queued' ? 'Queued...' : 'Generating your video...' }}</h3>
-      <p class="step-label">{{ currentStep }}</p>
+      <p v-if="status === 'queued' && queuePosition" class="step-label">
+        Position {{ queuePosition }} of {{ queueLength }} in queue
+      </p>
+      <p v-else class="step-label">{{ currentStep }}</p>
 
       <el-progress
         :percentage="progressPercent"

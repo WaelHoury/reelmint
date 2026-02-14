@@ -26,6 +26,51 @@ class EditorService:
         with open(project_json, "w", encoding="utf-8") as f:
             json.dump(project, f, indent=2, ensure_ascii=False)
 
+    def _ensure_video_no_audio(self, project_dir: Path, project: dict) -> Path:
+        """Generate video_no_audio.mp4 on-demand from stored trimmed clips.
+
+        Called when the editor or subtitle re-generation needs the intermediate
+        video file but it doesn't exist (e.g., after single-pass generation).
+        """
+        video_no_audio = project_dir / "video_no_audio.mp4"
+        if video_no_audio.exists():
+            return video_no_audio
+
+        from video_assembler import VideoAssembler
+
+        clips = project.get("clips", [])
+        clip_paths = []
+        for c in clips:
+            clip_file = c.get("file")
+            if clip_file:
+                p = project_dir / clip_file
+                if p.exists():
+                    clip_paths.append(p)
+
+        if not clip_paths:
+            raise ValueError("No clip files available to generate video_no_audio")
+
+        transition_duration = project.get(
+            "transition_duration",
+            float(os.getenv("TRANSITION_DURATION", "0.5")),
+        )
+
+        assembler = VideoAssembler(
+            ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
+            ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe"),
+        )
+        assembler.concat_videos_with_transitions(
+            clip_paths, video_no_audio,
+            transition="crossfade",
+            transition_duration=transition_duration,
+        )
+
+        # Update project manifest
+        project.setdefault("output", {})["video_no_audio"] = "video_no_audio.mp4"
+        self.save_project(project_dir, project)
+
+        return video_no_audio
+
     def generate_preview(self, project_dir: Path, project: dict) -> Path | None:
         """Generate a subtitle-free preview video by muxing video + audio (stream copy).
 
@@ -39,13 +84,23 @@ class EditorService:
         audio_file = (project.get("audio", {}).get("mixed_file")
                       or project.get("audio", {}).get("narration_file"))
 
-        if not video_no_audio_file or not audio_file:
+        if not audio_file:
             return None
 
-        video_src = project_dir / video_no_audio_file
         audio_src = project_dir / audio_file
+        if not audio_src.exists():
+            return None
 
-        if not video_src.exists() or not audio_src.exists():
+        # Generate video_no_audio on-demand if it doesn't exist
+        if not video_no_audio_file or not (project_dir / video_no_audio_file).exists():
+            try:
+                self._ensure_video_no_audio(project_dir, project)
+                video_no_audio_file = "video_no_audio.mp4"
+            except (ValueError, Exception):
+                return None
+
+        video_src = project_dir / video_no_audio_file
+        if not video_src.exists():
             return None
 
         # Skip regeneration if preview is newer than both sources
@@ -226,8 +281,9 @@ class EditorService:
         audio_path = project_dir / audio_mixed_file if audio_mixed_file else None
         narration_path = project_dir / audio_narration_file if audio_narration_file else None
 
+        # Generate video_no_audio on-demand if it doesn't exist
         if not video_no_audio or not video_no_audio.exists():
-            raise ValueError("Video source file not found in project")
+            video_no_audio = self._ensure_video_no_audio(project_dir, project)
         if not audio_path or not audio_path.exists():
             # Fall back to narration-only audio
             if narration_path and narration_path.exists():

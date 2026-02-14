@@ -50,6 +50,9 @@ services:
       - CACHE_DIR=/app/cache
       - OUTPUT_DIR=/app/output
       - PROJECTS_DIR=/app/projects
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000}
     env_file:
       - .env
     depends_on:
@@ -57,6 +60,12 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     volumes:
       - ./output:/app/output
       - ./projects:/app/projects
@@ -65,14 +74,16 @@ services:
       - ./models:/app/models
     restart: unless-stopped
 
-  # RQ Worker - Background job processor (scaled to 4 replicas)
+  # RQ Worker - Background job processor
+  # Resource budget: 3 workers × 4 CPUs × 7GB = 12 CPUs, 21GB
+  # Leaves ~4 CPUs + 11GB for postgres, redis, api, frontend, OS
   worker:
     build: .
     command: python run_worker.py
-    cpus: "2.0"
-    mem_limit: "4g"
+    cpus: "4.0"
+    mem_limit: "7g"
     deploy:
-      replicas: 4
+      replicas: 3
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://aivideo:${POSTGRES_PASSWORD:-aivideo_dev}@postgres:5432/aivideo
@@ -81,6 +92,8 @@ services:
       - CACHE_DIR=/app/cache
       - OUTPUT_DIR=/app/output
       - PROJECTS_DIR=/app/projects
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
     env_file:
       - .env
     depends_on:

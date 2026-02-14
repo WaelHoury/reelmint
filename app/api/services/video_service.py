@@ -25,7 +25,6 @@ class VideoService:
         """Initialize video service."""
         self.redis = Redis.from_url(settings.redis_url)
         self.queue = Queue('video_generation', connection=self.redis)
-        self.clip_queue = Queue('clip_generation', connection=self.redis)
 
     def generate_script(self, session: VideoSession) -> VideoSession:
         """Generate narration script from prompt.
@@ -108,11 +107,11 @@ class VideoService:
         return session
 
     def generate_clips(self, session: VideoSession) -> VideoSession:
-        """Queue clip generation as a background job.
+        """Run clip generation in a background thread on the API server.
 
-        Sets status to clips_generating, creates placeholder clips, and
-        enqueues the actual work. Returns immediately so the frontend can
-        start polling.
+        Clip search is I/O-bound (LLM + Pexels API calls), so it runs on
+        the API server instead of consuming a heavy RQ worker. This keeps
+        all workers free for video generation (the CPU-intensive task).
         """
         if session.status not in ("script_ready", "clips_generating"):
             raise ValueError("Script must be confirmed before generating clips")
@@ -125,14 +124,16 @@ class VideoService:
         session.clips = []  # will be populated progressively
         session_store.update(session)
 
-        # Queue background job
-        job = self.clip_queue.enqueue(
-            'app.api.services.video_service.generate_clips_task',
-            session.session_id,
-            job_timeout='10m',
+        # Run in background thread (I/O-bound, no heavy CPU)
+        import threading
+        thread = threading.Thread(
+            target=generate_clips_task,
+            args=(session.session_id,),
+            daemon=True,
         )
+        thread.start()
 
-        logger.info("Clip generation queued for session %s (job %s)", session.session_id, job.id)
+        logger.info("Clip generation started on API server for session %s", session.session_id)
         return session
 
     def update_clip(self, session: VideoSession, clip_index: int,
@@ -263,7 +264,7 @@ class VideoService:
             raw_status = job.get_status()
             mapped_status = self._map_rq_status(raw_status, session.status)
 
-            return {
+            result = {
                 'job_id': session.job_id,
                 'status': mapped_status,
                 'progress_percent': session.progress_percent,
@@ -271,6 +272,15 @@ class VideoService:
                 'error_message': session.error_message if mapped_status == 'failed' else None,
                 'output_url': f"/api/sessions/{session.session_id}/video" if mapped_status == 'completed' else None,
             }
+
+            if mapped_status == 'queued':
+                queue = Queue('video_generation', connection=self.redis)
+                job_ids = queue.job_ids
+                if session.job_id in job_ids:
+                    result['queue_position'] = job_ids.index(session.job_id) + 1
+                result['queue_length'] = len(job_ids)
+
+            return result
         except Exception:
             return {
                 'job_id': session.job_id,
@@ -280,14 +290,22 @@ class VideoService:
 
 
 def generate_clips_task(session_id: str):
-    """Background task: LLM clip generation + parallel Pexels search with progressive updates."""
-    session = session_store.get(session_id)
-    if not session:
-        raise ValueError(f"Session not found: {session_id}")
+    """Background task: LLM clip generation + parallel Pexels search with progressive updates.
 
-    t_total = time.time()
-
+    Runs in a background thread on the API server. All errors are caught and
+    logged — the thread must never raise, as unhandled exceptions in threads
+    are silently swallowed in Docker.
+    """
     try:
+        logger.info("Clip generation thread started for session %s", session_id)
+
+        session = session_store.get(session_id)
+        if not session:
+            logger.error("Clip generation: session not found: %s", session_id)
+            return
+
+        t_total = time.time()
+
         from app.core import ScenePlanner
         from video_searcher import CachedVideoSearcher
 
@@ -410,12 +428,14 @@ def generate_clips_task(session_id: str):
 
     except Exception as e:
         logger.exception("Clip generation failed for session %s", session_id)
-        session = session_store.get(session_id)
-        if session:
-            session.status = "script_ready"  # allow retry
-            session.error_message = f"Clip generation failed: {e}"
-            session_store.update(session)
-        raise
+        try:
+            session = session_store.get(session_id)
+            if session:
+                session.status = "script_ready"  # allow retry
+                session.error_message = f"Clip generation failed: {e}"
+                session_store.update(session)
+        except Exception:
+            logger.exception("Failed to update session %s after clip generation error", session_id)
 
 
 def generate_video_task(session_id: str):
@@ -491,7 +511,9 @@ def generate_video_task(session_id: str):
                 if project_dir:
                     # Update session with persistent paths
                     session.project_dir_path = str(project_dir)
-                    session.video_no_audio_path = str(project_dir / "video_no_audio.mp4")
+                    # video_no_audio is generated on-demand when editor opens
+                    vna_path = project_dir / "video_no_audio.mp4"
+                    session.video_no_audio_path = str(vna_path) if vna_path.exists() else None
                     session.final_audio_path = str(project_dir / "audio_final.wav")
                     session.narration_audio_path = str(project_dir / "narration.wav")
                     session_store.update(session)
@@ -574,6 +596,19 @@ def regenerate_subtitles(session: VideoSession, subtitle_settings: dict) -> Vide
                 if af:
                     final_audio = project_dir / af
                 temp_dir = project_dir
+
+    # Generate video_no_audio on-demand if it doesn't exist
+    if not video_no_audio.exists() and project_dir:
+        from app.api.services.editor_service import EditorService
+        editor_svc = EditorService()
+        proj_json = project_dir / "project.json"
+        if proj_json.exists():
+            with open(proj_json, "r") as f:
+                proj = json.load(f)
+            try:
+                video_no_audio = editor_svc._ensure_video_no_audio(project_dir, proj)
+            except ValueError:
+                pass
 
     if not video_no_audio.exists() or not final_audio.exists():
         raise ValueError("Intermediate video/audio files no longer exist on disk")

@@ -304,6 +304,7 @@ Output ONLY valid JSON, no markdown or explanation."""
         client = OpenAI(
             base_url=self.base_url,
             api_key=self.api_key,
+            timeout=60.0,
         )
 
         response = client.chat.completions.create(

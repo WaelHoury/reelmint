@@ -66,18 +66,18 @@ class Settings(BaseSettings):
     # === CLIP Matching ===
     clip_model: str = "ViT-B-32"
     clip_pretrained: str = "laion2b_s34b_b79k"
-    clip_candidates: int = 5
+    clip_candidates: int = 3
 
     # === FFmpeg ===
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
-    ffmpeg_threads: int = 2
+    ffmpeg_threads: int = 4
     # Final output encoding (used by concat_with_transitions, finalize_video)
     ffmpeg_preset: str = "fast"
     ffmpeg_crf: int = 25
     # Intermediate encoding (used by process_clip, normalize, trim — re-encoded later)
     ffmpeg_intermediate_preset: str = "veryfast"
-    ffmpeg_intermediate_crf: int = 18
+    ffmpeg_intermediate_crf: int = 26
 
     # === Video Settings ===
     video_orientation: Literal["landscape", "portrait", "square", "any"] = "landscape"
@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     fade_out_duration: float = 1.0
 
     # === ASR ===
-    whisper_model: str = "base"
+    whisper_model: str = "tiny"
 
     # === API ===
     api_host: str = "0.0.0.0"
