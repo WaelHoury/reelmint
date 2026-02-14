@@ -6,6 +6,7 @@ Usage:
 
 import argparse
 import threading
+import time
 from pathlib import Path
 import os
 from dotenv import load_dotenv
@@ -140,6 +141,8 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         tracker = LicenseTracker()
 
         # Step 1: Generate video plan (continuous narration + visual clips)
+        _step_times = {}
+        _t0 = time.time()
         print("\n[1/5] Generating video plan...")
         _report(10, "Generating video plan...")
 
@@ -223,6 +226,8 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             print(f"  Warning: Could not save LLM output to file: {e}")
 
         # Step 2: Generate continuous narration audio with word timestamps
+        _step_times['1_plan'] = time.time() - _t0
+        _t0 = time.time()
         print("\n[2/5] Generating narration audio...")
         _report(25, "Generating narration audio...")
         narration_raw = temp_dir / "narration_raw.wav"
@@ -267,6 +272,8 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             print(f"  Using heuristic timestamps (offset={subtitle_offset}s)")
 
         # Step 3: Search, download, and score video clips
+        _step_times['2_tts_asr'] = time.time() - _t0
+        _t0 = time.time()
         enable_color_grading = os.getenv("ENABLE_COLOR_GRADING", "true").lower() == "true"
         color_preset = os.getenv("COLOR_PRESET", "balanced")
 
@@ -489,14 +496,16 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 extended_path = last_clip_dir / "extended_outro.mp4"
 
                 import subprocess
+                from app.core.config import settings as _cfg
                 cmd = [
                     os.getenv("FFMPEG_PATH", "ffmpeg"),
                     '-i', str(last_video),
                     '-vf', f'tpad=stop_mode=clone:stop_duration={outro_duration}',
                     '-c:v', 'libx264',
-                    '-preset', 'fast',
-                    '-crf', '23',
+                    '-preset', _cfg.ffmpeg_intermediate_preset,
+                    '-crf', str(_cfg.ffmpeg_intermediate_crf),
                     '-pix_fmt', 'yuv420p',
+                    '-threads', str(_cfg.ffmpeg_threads),
                     '-an',
                     '-y',
                     str(extended_path)
@@ -505,6 +514,8 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 trimmed_videos[-1] = extended_path
 
         # Step 4: Assemble final video
+        _step_times['3_clips'] = time.time() - _t0
+        _t0 = time.time()
         print("\n[4/5] Assembling final video...")
         _report(75, "Assembling final video...")
 
@@ -672,6 +683,8 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             })
 
         # Generate credits
+        _step_times['4_assemble'] = time.time() - _t0
+        _t0 = time.time()
         print("\n[5/5] Generating credits...")
         _report(95, "Generating credits...")
         credits_path = output_path.parent / f"{output_path.stem}_credits.txt"
@@ -680,7 +693,20 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         credits_json = output_path.parent / f"{output_path.stem}_credits.json"
         tracker.export_credits_json(credits_json)
 
+        _step_times['5_credits'] = time.time() - _t0
+
+        # Print timing breakdown to identify bottlenecks
+        total_time = sum(_step_times.values())
         print(f"\n{'='*70}")
+        print("TIMING BREAKDOWN:")
+        print(f"  [1] LLM Plan:        {_step_times.get('1_plan', 0):6.1f}s")
+        print(f"  [2] TTS + ASR:       {_step_times.get('2_tts_asr', 0):6.1f}s")
+        print(f"  [3] Clip Search/DL:  {_step_times.get('3_clips', 0):6.1f}s")
+        print(f"  [4] Assemble/Encode: {_step_times.get('4_assemble', 0):6.1f}s")
+        print(f"  [5] Credits:         {_step_times.get('5_credits', 0):6.1f}s")
+        print(f"  {'─'*35}")
+        print(f"  TOTAL:               {total_time:6.1f}s")
+        print(f"{'='*70}")
         print("SUCCESS!")
         print(f"Video: {output_path}")
         print(f"Credits: {credits_path}")

@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import List, Literal, Optional
 import subprocess
 
+from app.core.config import settings
+
 
 class EffectsEngine:
     """Handles video transitions and visual effects."""
@@ -60,8 +62,9 @@ class EffectsEngine:
             f'[0:v][1:v]xfade=transition=fade:duration={duration}:offset={offset}[outv]',
             '-map', '[outv]',
             '-c:v', 'libx264',
-            '-preset', 'medium',
-            '-crf', '23',
+            '-preset', settings.ffmpeg_preset,
+            '-crf', str(settings.ffmpeg_crf),
+            '-threads', str(settings.ffmpeg_threads),
             '-y',
             str(output)
         ]
@@ -114,12 +117,13 @@ class EffectsEngine:
             '-filter_complex', filter_complex,
             '-map', '[outv]',
             '-c:v', 'libx264',
-            '-preset', 'medium',
-            '-crf', '23',
-            '-pix_fmt', 'yuv420p',  # Ensure Windows compatibility
-            '-profile:v', 'high',    # H.264 High Profile for better compatibility
-            '-level', '4.0',         # H.264 Level 4.0 for wide compatibility
-            '-movflags', '+faststart',  # Enable streaming/fast start
+            '-preset', settings.ffmpeg_preset,
+            '-crf', str(settings.ffmpeg_crf),
+            '-pix_fmt', 'yuv420p',
+            '-threads', str(settings.ffmpeg_threads),
+            '-profile:v', 'high',
+            '-level', '4.0',
+            '-movflags', '+faststart',
             '-y',
             str(output)
         ])
@@ -129,7 +133,8 @@ class EffectsEngine:
 
     def _build_transition_filtergraph(self, num_clips: int,
                                      clip_durations: List[float],
-                                     transition: str, duration: float) -> str:
+                                     transition: str, duration: float,
+                                     output_tag: str = "[outv]") -> str:
         """Build FFmpeg filtergraph for multiple transitions.
 
         Args:
@@ -137,6 +142,7 @@ class EffectsEngine:
             clip_durations: Duration of each clip in seconds
             transition: Transition type
             duration: Transition duration in seconds
+            output_tag: Tag for the final output stream (default [outv])
 
         Returns:
             FFmpeg filtergraph string
@@ -146,7 +152,7 @@ class EffectsEngine:
         [v01][2:v]xfade=transition=fade:duration=0.5:offset=8.5[outv]
         """
         if num_clips < 2:
-            return "[0:v]copy[outv]"
+            return f"[0:v]copy{output_tag}"
 
         transition_type = self.TRANSITION_TYPES.get(transition, 'fade')
         filters = []
@@ -165,13 +171,13 @@ class EffectsEngine:
                 input2 = f"[{i+1}:v]"
 
             if i == num_clips - 2:
-                output_tag = "[outv]"
+                out = output_tag
             else:
-                output_tag = f"[v{i}{i+1}]"
+                out = f"[v{i}{i+1}]"
 
             filters.append(
                 f"{input1}{input2}xfade=transition={transition_type}:"
-                f"duration={duration}:offset={cumulative_offset}{output_tag}"
+                f"duration={duration}:offset={cumulative_offset}{out}"
             )
 
         return ";".join(filters)
@@ -210,9 +216,10 @@ class EffectsEngine:
             '-vf', filter_str,
             '-c:a', 'copy',
             '-c:v', 'libx264',
-            '-preset', 'medium',
-            '-crf', '23',
-            '-pix_fmt', 'yuv420p',  # Ensure Windows compatibility
+            '-preset', settings.ffmpeg_preset,
+            '-crf', str(settings.ffmpeg_crf),
+            '-pix_fmt', 'yuv420p',
+            '-threads', str(settings.ffmpeg_threads),
             '-profile:v', 'high',
             '-level', '4.0',
             '-movflags', '+faststart',
@@ -355,9 +362,10 @@ class EffectsEngine:
             '-map', '0:a',
             '-c:a', 'copy',
             '-c:v', 'libx264',
-            '-preset', 'medium',
-            '-crf', '23',
+            '-preset', settings.ffmpeg_preset,
+            '-crf', str(settings.ffmpeg_crf),
             '-pix_fmt', 'yuv420p',
+            '-threads', str(settings.ffmpeg_threads),
             '-profile:v', 'high',
             '-level', '4.0',
             '-movflags', '+faststart',
@@ -390,8 +398,9 @@ class EffectsEngine:
             '-vf', 'eq=contrast=1.1:brightness=0.02:saturation=1.05',
             '-c:a', 'copy',
             '-c:v', 'libx264',
-            '-preset', 'medium',
-            '-crf', '23',
+            '-preset', settings.ffmpeg_preset,
+            '-crf', str(settings.ffmpeg_crf),
+            '-threads', str(settings.ffmpeg_threads),
             '-y',
             str(output_video)
         ]
@@ -445,7 +454,9 @@ class EffectsEngine:
             '-i', str(input_video),
             '-vf', f'fade=t=out:st={fade_start:.3f}:d={fade_duration}',
             '-af', f'afade=t=out:st={fade_start:.3f}:d={fade_duration}',
-            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-c:v', 'libx264', '-preset', settings.ffmpeg_preset,
+            '-crf', str(settings.ffmpeg_crf),
+            '-threads', str(settings.ffmpeg_threads),
             '-c:a', 'aac', '-b:a', '192k',
             '-y', str(output_video)
         ]
@@ -578,9 +589,200 @@ class EffectsEngine:
             '-filter_complex', filter_complex,
             '-map', '[outv]',
             *audio_map,
-            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-c:v', 'libx264', '-preset', settings.ffmpeg_preset,
+            '-crf', str(settings.ffmpeg_crf),
             '-pix_fmt', 'yuv420p',
+            '-threads', str(settings.ffmpeg_threads),
             *audio_codec,
+            '-movflags', '+faststart',
+            '-y', str(output_path)
+        ])
+
+        subprocess.run(cmd, capture_output=True, check=True)
+        return output_path
+
+    def concat_and_finalize(self, clips: List[Path], audio_path: Path,
+                            output_path: Path,
+                            transition: str = 'crossfade',
+                            transition_duration: float = 0.5,
+                            subtitle_path: Path = None,
+                            subscribe_video: Path = None,
+                            subscribe_params: dict = None,
+                            fade_duration: float = 0) -> Path:
+        """Concatenate clips with transitions AND apply effects in a single FFmpeg pass.
+
+        Combines concat_with_transitions + finalize_video into one encode,
+        eliminating a full decode+encode cycle (~20-30s savings).
+
+        Args:
+            clips: List of video clip paths (no audio)
+            audio_path: Final audio file (narration, optionally mixed with music)
+            output_path: Where to write the finished video
+            transition: Transition type ('crossfade', 'dissolve', etc.)
+            transition_duration: Transition duration in seconds
+            subtitle_path: Optional ASS subtitle file to burn in
+            subscribe_video: Optional green-screen subscribe button video
+            subscribe_params: Dict with overlay settings
+            fade_duration: Fade-to-black duration in seconds (0 = no fade)
+
+        Returns:
+            Path to final output video
+        """
+        output_path = Path(output_path)
+        audio_path = Path(audio_path)
+
+        if not clips:
+            raise ValueError("No clips provided")
+
+        if len(clips) == 1:
+            # Single clip — fall back to finalize_video (no xfade needed)
+            return self.finalize_video(
+                clips[0], audio_path, output_path,
+                subtitle_path=subtitle_path,
+                subscribe_video=subscribe_video,
+                subscribe_params=subscribe_params,
+                fade_duration=fade_duration
+            )
+
+        needs_overlay = subscribe_video is not None and Path(subscribe_video).exists()
+        needs_subtitles = subtitle_path is not None
+        needs_fade = fade_duration > 0
+        needs_effects = needs_overlay or needs_subtitles or needs_fade
+
+        # Get durations for xfade offsets
+        clip_durations = [self._get_duration(clip) for clip in clips]
+
+        # Calculate total video duration after transitions
+        total_duration = sum(clip_durations) - transition_duration * (len(clips) - 1)
+
+        # Build xfade filtergraph — output to intermediate tag if more filters follow
+        if needs_effects:
+            xfade_out_tag = "[xfade_out]"
+        else:
+            xfade_out_tag = "[outv]"
+
+        xfade_filter = self._build_transition_filtergraph(
+            len(clips), clip_durations, transition, transition_duration,
+            output_tag=xfade_out_tag
+        )
+
+        # --- Build inputs ---
+        cmd = [self.ffmpeg_path]
+        for clip in clips:
+            cmd.extend(['-i', str(clip)])
+
+        # Audio input index = number of clips
+        audio_idx = len(clips)
+        cmd.extend(['-i', str(audio_path)])
+
+        # Subscribe video input (optional)
+        subscribe_idx = None
+        if needs_overlay:
+            subscribe_idx = audio_idx + 1
+            cmd.extend(['-i', str(subscribe_video)])
+
+        if not needs_effects:
+            # No effects — xfade filter already outputs [outv], just mux audio
+            cmd.extend([
+                '-filter_complex', xfade_filter,
+                '-map', '[outv]',
+                '-map', f'{audio_idx}:a',
+                '-c:v', 'libx264', '-preset', settings.ffmpeg_preset,
+                '-crf', str(settings.ffmpeg_crf),
+                '-pix_fmt', 'yuv420p',
+                '-threads', str(settings.ffmpeg_threads),
+                '-c:a', 'aac', '-b:a', '192k',
+                '-shortest',
+                '-profile:v', 'high',
+                '-level', '4.0',
+                '-movflags', '+faststart',
+                '-y', str(output_path)
+            ])
+            subprocess.run(cmd, capture_output=True, check=True)
+            return output_path
+
+        # --- Build post-xfade filter chain ---
+        filter_parts = [xfade_filter]
+
+        # Subscribe overlay
+        if needs_overlay:
+            p = subscribe_params or {}
+            from video_assembler import get_resolution
+
+            sub_dur = self._get_duration(subscribe_video)
+            start = max(0, (total_duration / 2) - (sub_dur / 2))
+
+            ori = p.get('orientation', 'landscape')
+            sc = p.get('scale')
+            if not sc or sc <= 0:
+                sc = {'landscape': 0.60, 'portrait': 0.75, 'square': 0.65}.get(ori, 0.60)
+            w, _ = get_resolution(ori)
+            ow = int(w * sc)
+            mb = p.get('margin_bottom', 50)
+            ck_color = p.get('chromakey_color', '0x60FA01')
+            ck_sim = p.get('chromakey_similarity', 0.3)
+            ck_blend = p.get('chromakey_blend', 0.12)
+
+            overlay_filter = (
+                f"[{subscribe_idx}:v]scale={ow}:-1:flags=lanczos,"
+                f"colorkey={ck_color}:{ck_sim}:{ck_blend},"
+                f"format=rgba,"
+                f"setpts=PTS+{start:.3f}/TB[ovr];"
+                f"[xfade_out][ovr]overlay=x=(W-w)/2:y=H-h-{mb}:eof_action=pass"
+            )
+            filter_parts.append(overlay_filter)
+            # After overlay, the current video stream is unnamed (inline)
+            current_input = None  # inline continuation
+        else:
+            # No overlay — continue from [xfade_out]
+            current_input = "[xfade_out]"
+
+        # Subtitles + fade (appended as comma-separated filters)
+        post_filters = []
+        if needs_subtitles:
+            sub_str = str(Path(subtitle_path).resolve()).replace('\\', '/')
+            sub_str = sub_str.replace(':', '\\:')
+            post_filters.append(f"ass='{sub_str}'")
+        if needs_fade:
+            fade_start = max(0, total_duration - fade_duration)
+            post_filters.append(f"fade=t=out:st={fade_start:.3f}:d={fade_duration}")
+
+        # Assemble the complete filter_complex
+        if needs_overlay:
+            # Overlay is inline (no semicolon before post_filters)
+            if post_filters:
+                video_chain = ";".join(filter_parts) + "," + ",".join(post_filters) + "[outv]"
+            else:
+                video_chain = ";".join(filter_parts) + "[outv]"
+        else:
+            # No overlay — chain from [xfade_out]
+            if post_filters:
+                video_chain = xfade_filter + ";" + current_input + ",".join(post_filters) + "[outv]"
+            else:
+                video_chain = xfade_filter  # Already outputs [outv] (shouldn't reach here)
+
+        # Audio fade
+        if needs_fade:
+            fade_start = max(0, total_duration - fade_duration)
+            filter_complex = video_chain + f";[{audio_idx}:a]afade=t=out:st={fade_start:.3f}:d={fade_duration}[outa]"
+            audio_map = ['-map', '[outa]']
+        else:
+            filter_complex = video_chain
+            audio_map = ['-map', f'{audio_idx}:a']
+
+        # --- Final command ---
+        cmd.extend([
+            '-filter_complex', filter_complex,
+            '-map', '[outv]',
+            *audio_map,
+            '-c:v', 'libx264', '-preset', settings.ffmpeg_preset,
+            '-crf', str(settings.ffmpeg_crf),
+            '-pix_fmt', 'yuv420p',
+            '-threads', str(settings.ffmpeg_threads),
+            '-c:a', 'aac', '-b:a', '192k',
+            '-shortest',
+            '-profile:v', 'high',
+            '-level', '4.0',
             '-movflags', '+faststart',
             '-y', str(output_path)
         ])

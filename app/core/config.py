@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     # === FFmpeg ===
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
+    ffmpeg_threads: int = 2
+    # Final output encoding (used by concat_with_transitions, finalize_video)
+    ffmpeg_preset: str = "fast"
+    ffmpeg_crf: int = 25
+    # Intermediate encoding (used by process_clip, normalize, trim — re-encoded later)
+    ffmpeg_intermediate_preset: str = "veryfast"
+    ffmpeg_intermediate_crf: int = 18
 
     # === Video Settings ===
     video_orientation: Literal["landscape", "portrait", "square", "any"] = "landscape"

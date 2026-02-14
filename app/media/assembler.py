@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import List, Tuple
 import os
 
+from app.core.config import settings
+
 # Resolution mapping for video orientations
 ORIENTATION_RESOLUTION = {
     'landscape': (1920, 1080),
@@ -97,8 +99,9 @@ class VideoAssembler:
             '-r', '30',
             '-pix_fmt', 'yuv420p',
             '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '23',
+            '-preset', settings.ffmpeg_intermediate_preset,
+            '-crf', str(settings.ffmpeg_intermediate_crf),
+            '-threads', str(settings.ffmpeg_threads),
             '-y',  # Overwrite output
             str(output_path)
         ]
@@ -168,9 +171,10 @@ class VideoAssembler:
             '-i', str(input_path),
             '-t', str(duration_sec),
             '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '23',
+            '-preset', settings.ffmpeg_intermediate_preset,
+            '-crf', str(settings.ffmpeg_intermediate_crf),
             '-pix_fmt', 'yuv420p',
+            '-threads', str(settings.ffmpeg_threads),
             '-an',  # Strip audio - narration will be added later
             '-y',
             str(output_path)
@@ -222,8 +226,9 @@ class VideoAssembler:
             '-r', '30',
             '-pix_fmt', 'yuv420p',
             '-c:v', 'libx264',
-            '-preset', 'fast',
-            '-crf', '23',
+            '-preset', settings.ffmpeg_intermediate_preset,
+            '-crf', str(settings.ffmpeg_intermediate_crf),
+            '-threads', str(settings.ffmpeg_threads),
             '-an',
             '-y',
             str(output_path)
