@@ -123,7 +123,7 @@ class EditorService:
             "-y", str(preview_path),
         ]
         try:
-            subprocess.run(cmd, capture_output=True, check=True)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
             return preview_path
         except subprocess.CalledProcessError:
             return None
@@ -509,7 +509,7 @@ class EditorService:
                 ffmpeg, "-i", str(narration_path),
                 "-af", f"volume={narration_volume}",
                 "-y", str(output)
-            ], capture_output=True, check=True)
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         else:
             shutil.copy2(narration_path, output)
 

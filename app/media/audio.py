@@ -74,7 +74,7 @@ class AudioMixer:
             str(output_audio)
         ]
 
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return output_audio
 
     def apply_volume_ducking(self, narration_audio: Path,
@@ -121,7 +121,7 @@ class AudioMixer:
             str(output_audio)
         ]
 
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return output_audio
 
     def _get_duration(self, audio_file: Path) -> float:

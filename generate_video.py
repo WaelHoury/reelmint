@@ -510,7 +510,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                     '-y',
                     str(extended_path)
                 ]
-                subprocess.run(cmd, capture_output=True, check=True)
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
                 trimmed_videos[-1] = extended_path
 
         # Step 4: Assemble final video

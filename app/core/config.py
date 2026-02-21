@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expiry_hours: int = 72
 
+    # === Authorization ===
+    superuser_emails: str = ""  # Comma-separated emails exempt from per-user limits
+
     # === Cleanup ===
     temp_retention_hours: int = 48
 
