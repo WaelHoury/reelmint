@@ -24,6 +24,66 @@ from app.api.routes import (
 logger = logging.getLogger(__name__)
 
 
+async def _stale_job_cleanup_loop():
+    """Periodically detect and reset stale generating/clips_generating sessions."""
+    from redis import Redis
+    from datetime import datetime, timezone
+    from app.api.services.session_store import session_store
+    from app.api.services.video_service import VideoService, _release_generation_lock
+
+    while True:
+        await asyncio.sleep(300)  # Every 5 minutes
+        try:
+            redis_conn = Redis.from_url(settings.redis_url)
+            sessions = session_store.list_all(limit=200)
+
+            for session in sessions:
+                # --- Stale video generation ---
+                if session.status == "generating":
+                    heartbeat = redis_conn.get(f"job_heartbeat:{session.session_id}")
+                    if heartbeat:
+                        continue  # Worker is alive
+
+                    # Check if RQ job still exists
+                    job_alive = False
+                    if session.job_id:
+                        try:
+                            from rq.job import Job
+                            job = Job.fetch(session.job_id, connection=redis_conn)
+                            rq_status = job.get_status()
+                            if rq_status in ("queued", "started", "deferred", "scheduled"):
+                                job_alive = True
+                        except Exception:
+                            pass
+
+                    if not job_alive:
+                        logger.warning("Resetting stale generating session %s (no heartbeat, no active job)", session.session_id)
+                        session.status = "failed"
+                        session.error_message = "Generation was interrupted. Please try again."
+                        session_store.update(session)
+                        _release_generation_lock(session)
+
+                # --- Stale clip generation ---
+                elif session.status == "clips_generating":
+                    # Clip gen is a daemon thread — check if stuck for >15 min
+                    try:
+                        created = datetime.fromisoformat(session.created_at)
+                        if created.tzinfo is None:
+                            created = created.replace(tzinfo=timezone.utc)
+                        now = datetime.now(timezone.utc)
+                        age_minutes = (now - created).total_seconds() / 60
+                        if age_minutes > 15:
+                            logger.warning("Resetting stale clips_generating session %s (>15 min)", session.session_id)
+                            session.status = "script_ready"
+                            session.error_message = "Clip generation was interrupted. Please try again."
+                            session_store.update(session)
+                    except Exception:
+                        pass
+
+        except Exception:
+            logger.exception("Stale job cleanup error")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Run database migrations and temp cleanup on startup."""
@@ -44,7 +104,13 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
     loop.run_in_executor(None, cleanup_old_temp_dirs, None, settings.temp_retention_hours)
 
+    # Start stale job cleanup loop
+    cleanup_task = asyncio.create_task(_stale_job_cleanup_loop())
+
     yield
+
+    # Cancel cleanup on shutdown
+    cleanup_task.cancel()
 
 # Create FastAPI app
 app = FastAPI(

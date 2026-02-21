@@ -8,6 +8,7 @@ from app.db.base import get_db
 from app.db.models import User
 from app.api.services.auth_service import decode_jwt
 from app.api.services.session_store import session_store, VideoSession
+from app.core.config import settings
 
 security = HTTPBearer()
 optional_security = HTTPBearer(auto_error=False)
@@ -61,6 +62,12 @@ def get_owned_session(session_id: str, user: User) -> VideoSession:
     if session.user_id != user.id:
         raise HTTPException(status_code=404, detail="Session not found")
     return session
+
+
+def is_superuser(user: User) -> bool:
+    """Check if user is a superuser (exempt from per-user limits)."""
+    emails = [e.strip().lower() for e in settings.superuser_emails.split(",") if e.strip()]
+    return user.email.lower() in emails
 
 
 def get_optional_user(

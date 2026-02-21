@@ -13,6 +13,7 @@ from app.api.schemas import (
 )
 from app.api.services.session_store import session_store
 from app.api.deps import get_current_user, get_owned_session
+from app.api.services.video_service import video_service
 from app.db.base import get_db
 from app.db.models import User, Video
 
@@ -77,6 +78,20 @@ async def list_sessions(user: User = Depends(get_current_user)):
         sessions=[_session_to_response(s) for s in sessions],
         total=len(sessions),
     )
+
+
+@router.get("/active-generation")
+async def get_active_generation(user: User = Depends(get_current_user)):
+    """Returns the session_id currently generating for this user, or null.
+
+    Used by frontend to prevent multi-tab duplicate generation.
+    """
+    active_session_id = video_service._get_active_generation_session(user.id)
+    if active_session_id:
+        session = session_store.get(active_session_id)
+        if session and session.status in ("generating",):
+            return {"session_id": active_session_id, "status": session.status}
+    return {"session_id": None, "status": None}
 
 
 @router.get("/{session_id}", response_model=SessionResponse)

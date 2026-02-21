@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { startGeneration, getJobStatus, getVideoDownloadUrl, getVideoStreamUrl, updateSubtitles } from '../api'
+import { startGeneration, getJobStatus, getVideoDownloadUrl, getVideoStreamUrl, updateSubtitles, checkActiveGeneration } from '../api'
 
 const router = useRouter()
 
@@ -97,6 +97,33 @@ const previewStyle = computed(() => {
 })
 
 onMounted(async () => {
+  // Check if generation is already running (handles page refresh)
+  try {
+    const { data } = await getJobStatus(props.sessionId)
+    if ((data.status === 'processing' || data.status === 'queued') && data.job_id) {
+      // Already generating with a real job — resume polling without re-POSTing
+      status.value = data.status
+      progressPercent.value = data.progress_percent || 0
+      currentStep.value = data.current_step || ''
+      jobId.value = data.job_id
+      queuePosition.value = data.queue_position ?? null
+      queueLength.value = data.queue_length ?? null
+      startPolling()
+      return
+    }
+    if (data.status === 'completed') {
+      status.value = 'completed'
+      return
+    }
+    if (data.status === 'failed') {
+      status.value = 'failed'
+      errorMessage.value = data.error_message || 'Generation failed'
+      return
+    }
+  } catch {
+    // No job yet — proceed to generate
+  }
+
   await handleGenerate()
 })
 
@@ -105,6 +132,19 @@ onUnmounted(() => {
 })
 
 async function handleGenerate() {
+  // Multi-tab guard: check if user already has an active generation elsewhere
+  try {
+    const { data: active } = await checkActiveGeneration()
+    if (active.session_id && active.session_id !== props.sessionId) {
+      status.value = 'failed'
+      errorMessage.value = 'You already have a video generating in another session. Please wait for it to finish.'
+      ElMessage.warning(errorMessage.value)
+      return
+    }
+  } catch {
+    // Proceed if check fails
+  }
+
   status.value = 'queued'
   progressPercent.value = 0
   currentStep.value = 'Starting video generation...'

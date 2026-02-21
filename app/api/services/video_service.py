@@ -21,10 +21,41 @@ logger = logging.getLogger(__name__)
 class VideoService:
     """Handles video generation business logic."""
 
+    USER_GEN_LOCK_PREFIX = "user_generating:"
+    SESSION_ENQUEUE_LOCK_PREFIX = "session_enqueue:"
+
     def __init__(self):
         """Initialize video service."""
         self.redis = Redis.from_url(settings.redis_url)
         self.queue = Queue('video_generation', connection=self.redis)
+
+    # --- Per-user generation lock ---
+
+    def _acquire_user_generation_lock(self, user_id: int, session_id: str, ttl: int = 2700) -> bool:
+        """Acquire per-user generation lock. Returns True if acquired.
+
+        TTL is 45 minutes (matches job_timeout) so the lock auto-expires
+        even if the worker crashes without releasing it.
+        """
+        key = f"{self.USER_GEN_LOCK_PREFIX}{user_id}"
+        return bool(self.redis.set(key, session_id, nx=True, ex=ttl))
+
+    def _release_user_generation_lock(self, user_id: int, session_id: str):
+        """Release per-user lock only if it belongs to this session (atomic Lua check-and-delete)."""
+        key = f"{self.USER_GEN_LOCK_PREFIX}{user_id}"
+        lua = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+        self.redis.eval(lua, 1, key, session_id)
+
+    def _get_active_generation_session(self, user_id: int) -> Optional[str]:
+        """Get the session_id currently generating for this user, or None."""
+        key = f"{self.USER_GEN_LOCK_PREFIX}{user_id}"
+        val = self.redis.get(key)
+        return val.decode() if val else None
+
+    def _acquire_session_enqueue_lock(self, session_id: str, ttl: int = 60) -> bool:
+        """Prevent duplicate enqueue for the same session (double-click / refresh race)."""
+        key = f"{self.SESSION_ENQUEUE_LOCK_PREFIX}{session_id}"
+        return bool(self.redis.set(key, "1", nx=True, ex=ttl))
 
     def generate_script(self, session: VideoSession) -> VideoSession:
         """Generate narration script from prompt.
@@ -201,17 +232,42 @@ class VideoService:
         session_store.update(session)
         return session
 
-    def queue_video_generation(self, session: VideoSession) -> str:
+    def queue_video_generation(self, session: VideoSession, is_superuser: bool = False) -> str:
         """Queue video generation as background job.
 
         Args:
             session: Session ready for generation
+            is_superuser: If True, skip per-user concurrency limit
 
         Returns:
             Job ID
+
+        Raises:
+            ValueError: If session not ready, or user already has an active generation
         """
         if session.status not in ("clips_ready",):
             raise ValueError("Clips must be confirmed before generating video")
+
+        # Per-session dedup lock (prevents double-click / refresh race)
+        if not self._acquire_session_enqueue_lock(session.session_id):
+            # Already being enqueued — return existing job_id if available
+            if session.job_id:
+                return session.job_id
+            raise ValueError("Generation already being queued for this session")
+
+        # Per-user concurrency lock (superuser exempt)
+        if not is_superuser and session.user_id:
+            existing = self._get_active_generation_session(session.user_id)
+            if existing and existing != session.session_id:
+                raise ValueError(
+                    "You already have a video generating. "
+                    "Please wait for it to finish before starting another."
+                )
+            if not self._acquire_user_generation_lock(session.user_id, session.session_id):
+                raise ValueError(
+                    "You already have a video generating. "
+                    "Please wait for it to finish before starting another."
+                )
 
         session.status = "generating"
         session_store.update(session)
@@ -220,7 +276,7 @@ class VideoService:
         job = self.queue.enqueue(
             'app.api.services.video_service.generate_video_task',
             session.session_id,
-            job_timeout='30m',
+            job_timeout='45m',
         )
 
         session.job_id = job.id
@@ -253,8 +309,13 @@ class VideoService:
             Job status dict with mapped status values
         """
         if not session.job_id:
+            # No job enqueued yet — only return "processing"/"queued" if session
+            # is actually in a generating state; otherwise return the raw status
+            # so the frontend knows it still needs to POST /generate.
+            if session.status == "generating":
+                return {'status': 'processing', 'job_id': None}
             return {
-                'status': self._map_rq_status(session.status, session.status),
+                'status': session.status,
                 'job_id': None,
             }
 
@@ -438,6 +499,19 @@ def generate_clips_task(session_id: str):
             logger.exception("Failed to update session %s after clip generation error", session_id)
 
 
+def _release_generation_lock(session: VideoSession):
+    """Release per-user generation lock for a session. Safe to call multiple times."""
+    if not session.user_id:
+        return
+    try:
+        redis_conn = Redis.from_url(settings.redis_url)
+        key = f"{VideoService.USER_GEN_LOCK_PREFIX}{session.user_id}"
+        lua = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end"
+        redis_conn.eval(lua, 1, key, session.session_id)
+    except Exception:
+        logger.warning("Failed to release generation lock for user %s", session.user_id)
+
+
 def generate_video_task(session_id: str):
     """Background task for video generation.
 
@@ -448,9 +522,16 @@ def generate_video_task(session_id: str):
     if not session:
         raise ValueError(f"Session not found: {session_id}")
 
+    # Heartbeat Redis connection (reused across progress callbacks)
+    heartbeat_redis = Redis.from_url(settings.redis_url)
+    heartbeat_key = f"job_heartbeat:{session_id}"
+
     try:
         from generate_video import generate_video
         from pathlib import Path
+
+        # Set initial heartbeat
+        heartbeat_redis.setex(heartbeat_key, 120, "alive")
 
         # Update progress
         session.current_step = "Starting video generation..."
@@ -462,6 +543,12 @@ def generate_video_task(session_id: str):
             session.progress_percent = percent
             session.current_step = step
             session_store.update(session)
+            # Refresh heartbeat so stale detector knows we're alive
+            heartbeat_redis.setex(heartbeat_key, 120, "alive")
+            # Extend user generation lock TTL
+            if session.user_id:
+                lock_key = f"{VideoService.USER_GEN_LOCK_PREFIX}{session.user_id}"
+                heartbeat_redis.expire(lock_key, 2700)
 
         # Intermediate callback to save file paths for editor and subtitle re-generation
         def _save_intermediates(data):
@@ -501,6 +588,10 @@ def generate_video_task(session_id: str):
         session.current_step = "Complete!"
         session_store.update(session)
 
+        # Release per-user generation lock and clean up heartbeat
+        _release_generation_lock(session)
+        heartbeat_redis.delete(heartbeat_key)
+
         # Save completed video to PostgreSQL if user is authenticated
         if session.user_id:
             video_id = _save_video_to_db(session, output_path)
@@ -519,11 +610,13 @@ def generate_video_task(session_id: str):
                     session_store.update(session)
 
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).exception("Video generation failed for session %s", session_id)
+        logger.exception("Video generation failed for session %s", session_id)
         session.status = "failed"
         session.error_message = "Video generation failed. Check server logs for details."
         session_store.update(session)
+        # Release per-user generation lock and clean up heartbeat
+        _release_generation_lock(session)
+        heartbeat_redis.delete(heartbeat_key)
         raise
 
 
@@ -741,7 +834,7 @@ def _save_video_to_db(session, output_path):
                 "-ss", "2", "-vframes", "1", "-vf", "scale=480:-1",
                 str(thumb_path), "-y",
             ],
-            capture_output=True, timeout=30,
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30,
         )
         if thumb_path.exists():
             thumb_filename = thumb_path.name

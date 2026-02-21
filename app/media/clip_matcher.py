@@ -135,7 +135,7 @@ class CLIPMatcher:
             output_pattern
         ]
 
-        result = subprocess.run(cmd, capture_output=True)
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
         # Collect output paths, falling back to individual extraction if select fails
         frame_paths = []
@@ -158,7 +158,7 @@ class CLIPMatcher:
                     '-y',
                     str(output_path)
                 ]
-                subprocess.run(cmd, capture_output=True, check=True)
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
                 frame_paths.append(output_path)
 
         return frame_paths

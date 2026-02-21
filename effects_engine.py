@@ -69,7 +69,7 @@ class EffectsEngine:
             str(output)
         ]
 
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return output
 
     def concat_with_transitions(self, clips: List[Path], output: Path,
@@ -128,7 +128,7 @@ class EffectsEngine:
             str(output)
         ])
 
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return output
 
     def _build_transition_filtergraph(self, num_clips: int,
@@ -227,7 +227,7 @@ class EffectsEngine:
             str(output_video)
         ]
 
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return output_video
 
     def get_color_filter(self, preset: str = 'balanced',
@@ -373,7 +373,7 @@ class EffectsEngine:
             str(output_video)
         ]
 
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return output_video
 
     def normalize_white_balance(self, input_video: Path, output_video: Path) -> Path:
@@ -405,7 +405,7 @@ class EffectsEngine:
             str(output_video)
         ]
 
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         return output_video
 
     def _get_duration(self, video_file: Path) -> float:
@@ -461,7 +461,7 @@ class EffectsEngine:
             '-y', str(output_video)
         ]
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         return output_video
 
     def finalize_video(self, video_no_audio: Path, audio_path: Path,
@@ -511,7 +511,7 @@ class EffectsEngine:
                 '-movflags', '+faststart',
                 '-y', str(output_path)
             ]
-            subprocess.run(cmd, capture_output=True, check=True)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
             return output_path
 
         video_duration = self._get_duration(video_no_audio)
@@ -598,7 +598,7 @@ class EffectsEngine:
             '-y', str(output_path)
         ])
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         return output_path
 
     def concat_and_finalize(self, clips: List[Path], audio_path: Path,
@@ -698,7 +698,7 @@ class EffectsEngine:
                 '-movflags', '+faststart',
                 '-y', str(output_path)
             ])
-            subprocess.run(cmd, capture_output=True, check=True)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
             return output_path
 
         # --- Build post-xfade filter chain ---
@@ -787,5 +787,5 @@ class EffectsEngine:
             '-y', str(output_path)
         ])
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         return output_path

@@ -1,11 +1,14 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { getSession } from '../api'
 import StepSettings from '../components/StepSettings.vue'
 import StepScript from '../components/StepScript.vue'
 import StepClips from '../components/StepClips.vue'
 import StepGenerate from '../components/StepGenerate.vue'
+
+const STORAGE_KEY = 'wizard_state'
 
 const props = defineProps({
   mode: { type: String, default: 'longform', validator: v => ['shorts', 'longform'].includes(v) },
@@ -15,6 +18,52 @@ const router = useRouter()
 const activeStep = ref(0)
 const sessionId = ref(null)
 const sessionData = ref(null)
+const restoring = ref(false)
+
+function inferStepFromStatus(status) {
+  const map = {
+    'draft': 0,
+    'script_ready': 1,
+    'clips_generating': 2,
+    'clips_ready': 2,
+    'generating': 3,
+    'completed': 3,
+    'failed': 3,
+  }
+  return map[status] ?? 0
+}
+
+// Restore wizard state from sessionStorage on mount
+onMounted(async () => {
+  const saved = sessionStorage.getItem(STORAGE_KEY)
+  if (!saved) return
+
+  try {
+    const { sid } = JSON.parse(saved)
+    if (!sid) return
+
+    restoring.value = true
+    const { data } = await getSession(sid)
+    sessionId.value = sid
+    sessionData.value = data
+    activeStep.value = inferStepFromStatus(data.status)
+  } catch {
+    // Session expired or invalid — clear and start fresh
+    sessionStorage.removeItem(STORAGE_KEY)
+  } finally {
+    restoring.value = false
+  }
+})
+
+// Persist wizard state to sessionStorage whenever it changes
+watch([sessionId, activeStep], () => {
+  if (sessionId.value) {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
+      sid: sessionId.value,
+      step: activeStep.value,
+    }))
+  }
+})
 
 const steps = [
   { title: 'Settings', icon: 'Setting' },
@@ -45,6 +94,7 @@ function onClipsConfirmed(data) {
 }
 
 function onReset() {
+  sessionStorage.removeItem(STORAGE_KEY)
   router.push('/')
 }
 </script>

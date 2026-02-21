@@ -99,6 +99,10 @@ export function confirmClips(sessionId) {
 
 // === Video Generation ===
 
+export function checkActiveGeneration() {
+  return api.get('/sessions/active-generation')
+}
+
 export function startGeneration(sessionId) {
   return api.post(`/sessions/${sessionId}/generate`)
 }

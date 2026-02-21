@@ -554,7 +554,7 @@ class TTSGenerator:
             str(output_path)
         ]
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         return output_path
 
     def get_audio_duration(self, audio_path: Path) -> float:

@@ -16,7 +16,7 @@ from typing import Optional
 from app.api.schemas import JobStatusResponse, VideoDownloadResponse
 from app.api.services.session_store import session_store
 from app.api.services.video_service import video_service, regenerate_subtitles
-from app.api.deps import get_current_user, get_current_user_from_token_param, get_owned_session
+from app.api.deps import get_current_user, get_current_user_from_token_param, get_owned_session, is_superuser
 from app.db.models import User
 from app.utils.helpers import stream_file_response, project_lock
 from app.api.limiter import limiter
@@ -37,8 +37,22 @@ router = APIRouter(prefix="/sessions/{session_id}", tags=["videos"])
 @router.post("/generate", response_model=JobStatusResponse)
 @limiter.limit("3/minute")
 async def start_video_generation(request: Request, session_id: str, user: User = Depends(get_current_user)):
-    """Start video generation as background job."""
+    """Start video generation as background job.
+
+    Idempotent: if generation is already running for this session, returns
+    current job status instead of re-enqueuing.
+    """
     session = get_owned_session(session_id, user)
+
+    # If already generating, return current status (idempotent on refresh)
+    if session.status == "generating" and session.job_id:
+        status_data = video_service.get_job_status(session)
+        return JobStatusResponse(
+            job_id=session.job_id,
+            status=status_data.get('status', 'processing'),
+            progress_percent=status_data.get('progress_percent') or session.progress_percent or 0,
+            current_step=status_data.get('current_step') or session.current_step or 'Processing...',
+        )
 
     if session.status != "clips_ready":
         raise HTTPException(
@@ -47,13 +61,15 @@ async def start_video_generation(request: Request, session_id: str, user: User =
         )
 
     try:
-        job_id = video_service.queue_video_generation(session)
+        job_id = video_service.queue_video_generation(session, is_superuser=is_superuser(user))
         return JobStatusResponse(
             job_id=job_id,
             status="queued",
             progress_percent=0,
             current_step="Queued for processing...",
         )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.exception("Failed to queue video generation for session %s", session_id)
         raise HTTPException(status_code=500, detail="Failed to queue video generation")

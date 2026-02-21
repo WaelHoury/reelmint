@@ -106,7 +106,7 @@ class VideoAssembler:
             str(output_path)
         ]
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         return output_path
 
     def normalize_audio(self, input_path: Path, output_path: Path) -> Path:
@@ -139,7 +139,7 @@ class VideoAssembler:
             str(output_path)
         ]
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         return output_path
 
     def trim_video(self, input_path: Path, output_path: Path,
@@ -180,7 +180,7 @@ class VideoAssembler:
             str(output_path)
         ]
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         return output_path
 
     def process_clip(self, input_path: Path, output_path: Path,
@@ -234,7 +234,7 @@ class VideoAssembler:
             str(output_path)
         ]
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         return output_path
 
     def concat_videos(self, video_list: List[Path], output_path: Path) -> Path:
@@ -280,7 +280,7 @@ class VideoAssembler:
         ]
 
         try:
-            subprocess.run(cmd, capture_output=True, check=True)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         finally:
             # Clean up concat file
             if concat_file.exists():
@@ -363,7 +363,7 @@ class VideoAssembler:
         ]
 
         try:
-            subprocess.run(cmd, capture_output=True, check=True)
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         finally:
             # Clean up concat file
             if concat_file.exists():
@@ -406,7 +406,7 @@ class VideoAssembler:
             str(output_path)
         ]
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         return output_path
 
     def extract_frame(self, video_path: Path, timestamp: float, output_path: Path) -> Path:
@@ -435,5 +435,5 @@ class VideoAssembler:
             str(output_path)
         ]
 
-        subprocess.run(cmd, capture_output=True, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
         return output_path
