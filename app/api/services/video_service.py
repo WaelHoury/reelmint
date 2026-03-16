@@ -609,6 +609,20 @@ def generate_video_task(session_id: str):
                     session.narration_audio_path = str(project_dir / "narration.wav")
                     session_store.update(session)
 
+                # Upload to R2 if enabled (after local project files are persisted)
+                if settings.use_r2_storage:
+                    _update_progress(95, "Uploading to cloud storage...")
+                    try:
+                        _upload_to_r2(session, output_path, video_id, project_dir)
+                    except Exception:
+                        logger.exception("R2 upload failed for video %d", video_id)
+                        session.status = "failed"
+                        session.error_message = "Cloud storage upload failed. Please try again."
+                        session_store.update(session)
+                        _release_generation_lock(session)
+                        heartbeat_redis.delete(heartbeat_key)
+                        raise
+
     except Exception as e:
         logger.exception("Video generation failed for session %s", session_id)
         session.status = "failed"
@@ -620,8 +634,83 @@ def generate_video_task(session_id: str):
         raise
 
 
+def _upload_to_r2(session, output_path: Path, video_id: int, project_dir):
+    """Upload final video, thumbnail, and project files to R2.
+
+    Updates the Video DB record with R2 keys.
+    In production, removes local persistent copies after a successful upload.
+    Raises on any failure — caller must mark the job as failed.
+    """
+    from app.api.services.r2_storage import (
+        r2_storage, r2_video_key, r2_thumbnail_key,
+        r2_project_prefix,
+    )
+    from app.db.base import SessionLocal
+    from app.db.models import Video
+
+    user_id = session.user_id
+    output_path = Path(output_path)
+
+    # Upload final video
+    video_key = r2_video_key(user_id, video_id, version=1)
+    r2_storage.upload_file(output_path, video_key)
+
+    # Upload thumbnail (same name, .jpg extension)
+    thumb_key = None
+    thumb_path = output_path.with_suffix(".jpg")
+    if thumb_path.exists():
+        thumb_key = r2_thumbnail_key(user_id, video_id)
+        r2_storage.upload_file(thumb_path, thumb_key)
+
+    # Upload entire project directory
+    proj_prefix = None
+    if project_dir and Path(project_dir).exists():
+        proj_prefix = r2_project_prefix(user_id, video_id)
+        r2_storage.upload_directory(Path(project_dir), proj_prefix)
+
+    # Persist R2 keys to DB
+    db = SessionLocal()
+    try:
+        video = db.query(Video).filter(Video.id == video_id).first()
+        if video:
+            video.r2_video_key = video_key
+            video.r2_thumbnail_key = thumb_key
+            video.r2_project_prefix = proj_prefix
+            db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+    # Production: clean up local persistent copies
+    if settings.environment == "production":
+        _cleanup_local_after_r2_upload(output_path, thumb_path, project_dir)
+
+    logger.info("R2 upload complete for video %d (user %d)", video_id, user_id)
+
+
+def _cleanup_local_after_r2_upload(output_path: Path, thumb_path, project_dir):
+    """Remove local persistent files after a successful R2 upload.
+
+    Only called in production. Development keeps local files for debugging.
+    Failures are non-fatal (logged as warnings).
+    """
+    import shutil
+    try:
+        if output_path and Path(output_path).exists():
+            Path(output_path).unlink()
+        if thumb_path and Path(thumb_path).exists():
+            Path(thumb_path).unlink()
+        if project_dir and Path(project_dir).exists():
+            shutil.rmtree(project_dir, ignore_errors=True)
+        logger.info("Cleaned up local files after R2 upload: %s", output_path)
+    except Exception as e:
+        logger.warning("Local cleanup after R2 upload encountered an error: %s", e)
+
+
 def _find_project_dir(session):
-    """Find the project directory for a session, checking session field and DB."""
+    """Find the project directory for a session, checking session field, DB, and R2."""
     if session.project_dir_path:
         project_dir = Path(session.project_dir_path)
         if project_dir.exists():
@@ -633,14 +722,29 @@ def _find_project_dir(session):
         from app.db.models import Video
         db = SessionLocal()
         try:
+            output_filename = Path(session.output_path).name if session.output_path else ""
             video = db.query(Video).filter(
                 Video.user_id == session.user_id,
-                Video.output_filename == Path(session.output_path).name if session.output_path else ""
+                Video.output_filename == output_filename,
             ).first()
-            if video and video.project_data_path:
-                project_dir = Path(video.project_data_path)
-                if project_dir.exists():
-                    return project_dir
+            if video:
+                if video.project_data_path:
+                    project_dir = Path(video.project_data_path)
+                    if project_dir.exists():
+                        return project_dir
+                # R2 fallback: download project files on demand
+                if settings.use_r2_storage and video.r2_project_prefix:
+                    try:
+                        from app.api.services.r2_storage import r2_storage
+                        project_dir = Path(settings.projects_dir) / str(video.id)
+                        r2_storage.download_directory(video.r2_project_prefix, project_dir)
+                        if (project_dir / "project.json").exists():
+                            # Update DB path for future requests
+                            video.project_data_path = str(project_dir)
+                            db.commit()
+                            return project_dir
+                    except Exception as e:
+                        logger.warning("R2 project download failed for session %s: %s", session.session_id, e)
         except Exception:
             pass
         finally:

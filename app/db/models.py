@@ -38,6 +38,10 @@ class Video(Base):
     file_size_bytes = Column(BigInteger, nullable=True)
     thumbnail_filename = Column(String(512), nullable=True)
     project_data_path = Column(String(512), nullable=True)
+    r2_video_key = Column(String(512), nullable=True)
+    r2_thumbnail_key = Column(String(512), nullable=True)
+    r2_project_prefix = Column(String(512), nullable=True)
+    render_version = Column(Integer, default=1, server_default="1", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="videos")

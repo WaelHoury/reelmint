@@ -92,13 +92,16 @@ async def render_session_editor(
 
     def _render_with_lock():
         with project_lock(lock_id):
-            return editor_service.render_changes(
+            render_type = editor_service.render_changes(
                 project_dir, project,
                 subtitles=render_request.subtitles.model_dump() if render_request.subtitles else None,
                 audio=render_request.audio.model_dump() if render_request.audio else None,
                 replaced_clips=[c.model_dump() for c in render_request.replaced_clips] if render_request.replaced_clips else None,
                 output_path=output_path,
             )
+            if settings.use_r2_storage and session.user_id:
+                _r2_upload_render_result(session.user_id, output_path, project_dir)
+            return render_type
 
     try:
         loop = asyncio.get_event_loop()
@@ -124,6 +127,12 @@ async def stream_session_preview(
 ):
     """Stream the subtitle-free preview video for editor playback."""
     session = get_owned_session(session_id, user)
+
+    # R2 redirect via DB video record
+    if settings.use_r2_storage and session.user_id and session.output_path:
+        r2_resp = _r2_preview_redirect_for_session(session)
+        if r2_resp:
+            return r2_resp
 
     project_dir = _resolve_project_dir_from_session(session)
     if not project_dir:
@@ -197,16 +206,20 @@ async def render_library_editor(
 
     # Use project dir name as lock key to prevent concurrent file mutations
     lock_id = project_dir.name
+    user_id = video.user_id
 
     def _render_with_lock():
         with project_lock(lock_id):
-            return editor_service.render_changes(
+            render_type = editor_service.render_changes(
                 project_dir, project,
                 subtitles=render_request.subtitles.model_dump() if render_request.subtitles else None,
                 audio=render_request.audio.model_dump() if render_request.audio else None,
                 replaced_clips=[c.model_dump() for c in render_request.replaced_clips] if render_request.replaced_clips else None,
                 output_path=output_path,
             )
+            if settings.use_r2_storage:
+                _r2_upload_render_result(user_id, output_path, project_dir)
+            return render_type
 
     try:
         loop = asyncio.get_event_loop()
@@ -235,6 +248,13 @@ async def stream_video_preview(
     video = db.query(Video).filter(Video.id == video_id, Video.user_id == user.id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    if settings.use_r2_storage and video.r2_project_prefix:
+        from fastapi.responses import RedirectResponse
+        from app.api.services.r2_storage import r2_storage, r2_preview_key
+        preview_key = r2_preview_key(video.user_id, video.id)
+        if r2_storage.file_exists(preview_key):
+            return RedirectResponse(url=r2_storage.generate_signed_url(preview_key), status_code=302)
 
     project_dir = _resolve_project_dir_from_video(video)
     if not project_dir:
@@ -294,7 +314,10 @@ def _resolve_project_dir_from_session(session) -> Path | None:
 
 
 def _resolve_project_dir_from_video(video: Video) -> Path | None:
-    """Find the project directory for a library video."""
+    """Find the project directory for a library video.
+
+    Falls back to downloading from R2 if local files have been cleaned up.
+    """
     # Check the DB field
     if video.project_data_path:
         project_dir = Path(video.project_data_path)
@@ -306,4 +329,81 @@ def _resolve_project_dir_from_video(video: Video) -> Path | None:
     if (project_dir / "project.json").exists():
         return project_dir
 
+    # R2 fallback: download project files on demand
+    if settings.use_r2_storage and video.r2_project_prefix:
+        try:
+            from app.api.services.r2_storage import r2_storage
+            project_dir = Path(settings.projects_dir) / str(video.id)
+            r2_storage.download_directory(video.r2_project_prefix, project_dir)
+            if (project_dir / "project.json").exists():
+                return project_dir
+        except Exception as e:
+            logger.warning("R2 project download failed for video %d: %s", video.id, e)
+
     return None
+
+
+def _r2_preview_redirect_for_session(session):
+    """Return a RedirectResponse to the R2 preview URL if it exists, else None."""
+    from app.db.base import SessionLocal
+    from app.db.models import Video as VideoModel
+    from pathlib import Path as _Path
+    db = SessionLocal()
+    try:
+        video = db.query(VideoModel).filter(
+            VideoModel.user_id == session.user_id,
+            VideoModel.output_filename == _Path(session.output_path).name,
+        ).first()
+        if video and video.r2_project_prefix:
+            from fastapi.responses import RedirectResponse
+            from app.api.services.r2_storage import r2_storage, r2_preview_key
+            preview_key = r2_preview_key(video.user_id, video.id)
+            if r2_storage.file_exists(preview_key):
+                return RedirectResponse(url=r2_storage.generate_signed_url(preview_key), status_code=302)
+    except Exception as e:
+        logger.warning("R2 preview lookup failed: %s", e)
+    finally:
+        db.close()
+    return None
+
+
+def _r2_upload_render_result(user_id: int, output_path: Path, project_dir: Path) -> None:
+    """Upload re-rendered video + updated project files to R2 with a versioned key.
+
+    Non-fatal: logs a warning if the upload fails so the render still succeeds locally.
+    """
+    from app.db.base import SessionLocal
+    from app.db.models import Video as VideoModel
+    from app.api.services.r2_storage import (
+        r2_storage, r2_video_key, r2_project_prefix, r2_preview_key,
+    )
+    try:
+        db = SessionLocal()
+        try:
+            video = db.query(VideoModel).filter(
+                VideoModel.user_id == user_id,
+                VideoModel.output_filename == output_path.name,
+            ).first()
+            if not video:
+                return
+            new_version = (video.render_version or 1) + 1
+            new_video_key = r2_video_key(user_id, video.id, version=new_version)
+            r2_storage.upload_file(output_path, new_video_key)
+            r2_storage.upload_directory(project_dir, r2_project_prefix(user_id, video.id))
+            preview_path = project_dir / "video_preview.mp4"
+            if preview_path.exists():
+                r2_storage.upload_file(preview_path, r2_preview_key(user_id, video.id))
+            video.r2_video_key = new_video_key
+            video.render_version = new_version
+            db.commit()
+            # Production cleanup
+            if settings.environment == "production":
+                from app.api.services.video_service import _cleanup_local_after_r2_upload
+                _cleanup_local_after_r2_upload(output_path, None, project_dir)
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("R2 re-upload after render failed: %s", e)

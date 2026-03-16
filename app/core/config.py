@@ -143,6 +143,14 @@ class Settings(BaseSettings):
     # === Environment ===
     environment: Literal["development", "production"] = "development"
 
+    # === Cloud Storage (Cloudflare R2) ===
+    use_r2_storage: bool = False
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_name: str = ""
+    r2_signed_url_expiry_seconds: int = 3600
+
     @model_validator(mode="after")
     def _validate_production_secrets(self):
         """Ensure critical secrets are set in production."""
@@ -156,6 +164,19 @@ class Settings(BaseSettings):
             logging.getLogger(__name__).warning(
                 "Using default JWT secret key. Set JWT_SECRET_KEY env var before deploying."
             )
+        if self.use_r2_storage:
+            missing = [
+                name for name, val in [
+                    ("R2_ACCOUNT_ID", self.r2_account_id),
+                    ("R2_ACCESS_KEY_ID", self.r2_access_key_id),
+                    ("R2_SECRET_ACCESS_KEY", self.r2_secret_access_key),
+                    ("R2_BUCKET_NAME", self.r2_bucket_name),
+                ] if not val
+            ]
+            if missing:
+                raise ValueError(
+                    f"USE_R2_STORAGE is enabled but required credentials are missing: {', '.join(missing)}"
+                )
         return self
 
     class Config:

@@ -22,6 +22,45 @@ from app.utils.helpers import stream_file_response, project_lock
 from app.api.limiter import limiter
 
 
+def _reupload_video_to_r2(session) -> None:
+    """Upload the (re-rendered) video file to R2 with a bumped version key.
+
+    Updates render_version and r2_video_key in the DB.
+    Non-fatal: logs a warning on failure so the subtitle update still succeeds.
+    """
+    from app.core.config import settings
+    from app.db.base import SessionLocal
+    from app.db.models import Video
+    from app.api.services.r2_storage import r2_storage, r2_video_key
+
+    try:
+        output_path = Path(session.output_path)
+        if not output_path.exists():
+            logger.warning("Cannot re-upload to R2: video file missing at %s", output_path)
+            return
+        db = SessionLocal()
+        try:
+            video = db.query(Video).filter(
+                Video.user_id == session.user_id,
+                Video.output_filename == output_path.name,
+            ).first()
+            if not video:
+                return
+            new_version = (video.render_version or 1) + 1
+            new_key = r2_video_key(video.user_id, video.id, version=new_version)
+            r2_storage.upload_file(output_path, new_key)
+            video.r2_video_key = new_key
+            video.render_version = new_version
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+    except Exception as e:
+        logger.warning("R2 re-upload after subtitle regen failed: %s", e)
+
+
 class UpdateSubtitlesRequest(BaseModel):
     """Request to update subtitle settings and re-generate."""
     style: Optional[str] = Field(default="youtube", description="Preset: youtube, tiktok, minimal")
@@ -92,6 +131,27 @@ async def get_job_status(session_id: str, user: User = Depends(get_current_user)
     )
 
 
+def _get_r2_video_key_for_session(session):
+    """Look up the R2 video key for a session via the DB Video record."""
+    from app.core.config import settings
+    if not settings.use_r2_storage or not session.user_id or not session.output_path:
+        return None
+    from app.db.base import SessionLocal
+    from app.db.models import Video
+    from pathlib import Path as _Path
+    db = SessionLocal()
+    try:
+        video = db.query(Video).filter(
+            Video.user_id == session.user_id,
+            Video.output_filename == _Path(session.output_path).name,
+        ).first()
+        return (video.r2_video_key, video.id, video.render_version) if video else None
+    except Exception:
+        return None
+    finally:
+        db.close()
+
+
 @router.get("/video")
 async def download_video(session_id: str, user: User = Depends(get_current_user_from_token_param)):
     """Download the generated video."""
@@ -105,6 +165,16 @@ async def download_video(session_id: str, user: User = Depends(get_current_user_
 
     if not session.output_path:
         raise HTTPException(status_code=404, detail="Video file not found")
+
+    r2_result = _get_r2_video_key_for_session(session)
+    if r2_result and r2_result[0]:
+        from fastapi.responses import RedirectResponse
+        from app.api.services.r2_storage import r2_storage
+        disposition = f'attachment; filename="{session.title}.mp4"'
+        return RedirectResponse(
+            url=r2_storage.generate_signed_url(r2_result[0], content_disposition=disposition),
+            status_code=302,
+        )
 
     video_path = Path(session.output_path)
     if not video_path.exists():
@@ -130,6 +200,12 @@ async def stream_video(session_id: str, request: Request, user: User = Depends(g
 
     if not session.output_path:
         raise HTTPException(status_code=404, detail="Video file not found")
+
+    r2_result = _get_r2_video_key_for_session(session)
+    if r2_result and r2_result[0]:
+        from fastapi.responses import RedirectResponse
+        from app.api.services.r2_storage import r2_storage
+        return RedirectResponse(url=r2_storage.generate_signed_url(r2_result[0]), status_code=302)
 
     video_path = Path(session.output_path)
     if not video_path.exists():
@@ -181,6 +257,10 @@ async def update_video_subtitles(request: Request, session_id: str, sub_request:
     def _regen_with_lock():
         with project_lock(session_id):
             regenerate_subtitles(session, sub_request.model_dump(exclude_none=True))
+            # Re-upload updated video to R2 if enabled
+            from app.core.config import settings as _settings
+            if _settings.use_r2_storage and session.output_path:
+                _reupload_video_to_r2(session)
 
     try:
         loop = asyncio.get_event_loop()

@@ -1,11 +1,14 @@
 """Video library API routes — list, stream, download, delete user's videos."""
 
+import logging
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.core.config import settings
 from app.db.base import get_db
@@ -83,6 +86,11 @@ async def stream_library_video(
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
+    if video.r2_video_key and settings.use_r2_storage:
+        from fastapi.responses import RedirectResponse
+        from app.api.services.r2_storage import r2_storage
+        return RedirectResponse(url=r2_storage.generate_signed_url(video.r2_video_key), status_code=302)
+
     video_path = _get_video_path(video)
     if not video_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found on disk")
@@ -100,6 +108,13 @@ async def download_library_video(
     video = db.query(Video).filter(Video.id == video_id, Video.user_id == user.id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    if video.r2_video_key and settings.use_r2_storage:
+        from fastapi.responses import RedirectResponse
+        from app.api.services.r2_storage import r2_storage
+        disposition = f'attachment; filename="{video.title}.mp4"'
+        signed_url = r2_storage.generate_signed_url(video.r2_video_key, content_disposition=disposition)
+        return RedirectResponse(url=signed_url, status_code=302)
 
     video_path = _get_video_path(video)
     if not video_path.exists():
@@ -123,6 +138,11 @@ async def get_video_thumbnail(
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
+    if video.r2_thumbnail_key and settings.use_r2_storage:
+        from fastapi.responses import RedirectResponse
+        from app.api.services.r2_storage import r2_storage
+        return RedirectResponse(url=r2_storage.generate_signed_url(video.r2_thumbnail_key), status_code=302)
+
     if not video.thumbnail_filename:
         raise HTTPException(status_code=404, detail="No thumbnail available")
 
@@ -140,11 +160,20 @@ async def delete_video(
     db: Session = Depends(get_db),
 ):
     """Delete a video and its files."""
+    import shutil
     video = db.query(Video).filter(Video.id == video_id, Video.user_id == user.id).first()
     if not video:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    # Delete files
+    # Delete all R2 objects (non-fatal if it fails)
+    if settings.use_r2_storage:
+        from app.api.services.r2_storage import r2_storage, r2_video_prefix
+        try:
+            r2_storage.delete_prefix(r2_video_prefix(video.user_id, video.id))
+        except Exception as e:
+            logger.warning("Failed to delete R2 objects for video %d: %s", video_id, e)
+
+    # Delete local output files
     video_path = _get_video_path(video)
     if video_path.exists():
         video_path.unlink()
@@ -153,6 +182,12 @@ async def delete_video(
         thumb_path = Path(settings.output_dir) / video.thumbnail_filename
         if thumb_path.exists():
             thumb_path.unlink()
+
+    # Delete local project directory
+    if video.project_data_path:
+        project_dir = Path(video.project_data_path)
+        if project_dir.exists():
+            shutil.rmtree(project_dir, ignore_errors=True)
 
     db.delete(video)
     db.commit()
