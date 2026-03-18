@@ -20,6 +20,10 @@ const sessionId = ref(null)
 const sessionData = ref(null)
 const restoring = ref(false)
 
+function clearStoredWizardState() {
+  sessionStorage.removeItem(STORAGE_KEY)
+}
+
 function inferStepFromStatus(status) {
   const map = {
     'draft': 0,
@@ -44,24 +48,30 @@ onMounted(async () => {
 
     restoring.value = true
     const { data } = await getSession(sid)
+    if (data.status === 'completed') {
+      clearStoredWizardState()
+      return
+    }
     sessionId.value = sid
     sessionData.value = data
     activeStep.value = inferStepFromStatus(data.status)
   } catch {
     // Session expired or invalid — clear and start fresh
-    sessionStorage.removeItem(STORAGE_KEY)
+    clearStoredWizardState()
   } finally {
     restoring.value = false
   }
 })
 
 // Persist wizard state to sessionStorage whenever it changes
-watch([sessionId, activeStep], () => {
-  if (sessionId.value) {
+watch([sessionId, activeStep, sessionData], () => {
+  if (sessionId.value && sessionData.value?.status !== 'completed') {
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify({
       sid: sessionId.value,
       step: activeStep.value,
     }))
+  } else {
+    clearStoredWizardState()
   }
 })
 
@@ -94,8 +104,16 @@ function onClipsConfirmed(data) {
 }
 
 function onReset() {
-  sessionStorage.removeItem(STORAGE_KEY)
+  clearStoredWizardState()
+  sessionId.value = null
+  sessionData.value = null
+  activeStep.value = 0
   router.push('/')
+}
+
+function onGenerationCompleted() {
+  sessionData.value = { ...(sessionData.value || {}), status: 'completed' }
+  clearStoredWizardState()
 }
 </script>
 
@@ -143,6 +161,7 @@ function onReset() {
         v-else-if="activeStep === 3"
         :session-id="sessionId"
         :session-data="sessionData"
+        @completed="onGenerationCompleted"
         @reset="onReset"
       />
     </div>

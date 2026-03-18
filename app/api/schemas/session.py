@@ -15,6 +15,13 @@ class SessionSettings(BaseModel):
     )
 
 
+class TTSSelection(BaseModel):
+    """TTS voice selection for a session."""
+    provider: str = Field(..., description="TTS provider: kokoro, chatterbox, fish")
+    voice_key: str = Field(..., description="Composite key: provider:voice_id")
+    label: Optional[str] = Field(default=None, description="Human-readable voice name")
+
+
 class CreateSessionRequest(BaseModel):
     """Request to create a new video generation session."""
     title: str = Field(..., min_length=1, max_length=200, description="Video title (used as filename)")
@@ -26,6 +33,7 @@ class CreateSessionRequest(BaseModel):
     subtitles_enabled: bool = Field(default=True)
     orientation: Literal["landscape", "portrait", "square"] = Field(default="landscape")
     narration_style: Optional[str] = Field(default=None, description="Narration style for prompt mode (viral, informative, funny, storytelling, motivational, creative)")
+    tts_selection: Optional[TTSSelection] = Field(default=None, description="TTS voice selection")
 
     @field_validator("title")
     @classmethod
@@ -50,6 +58,7 @@ class SessionResponse(BaseModel):
     word_count: Optional[int] = None
     estimated_duration_seconds: Optional[float] = None
     error_message: Optional[str] = None
+    tts_selection: Optional[TTSSelection] = None
 
 
 class SessionListResponse(BaseModel):

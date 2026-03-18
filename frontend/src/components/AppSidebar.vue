@@ -15,6 +15,7 @@ const router = useRouter()
 const menuItems = [
   { path: '/', icon: 'Plus', label: 'Create', exact: true },
   { path: '/videos', icon: 'Film', label: 'My Videos' },
+  { path: '/voices', icon: 'Microphone', label: 'My Voices' },
   { path: '/account', icon: 'User', label: 'Account' },
 ]
 

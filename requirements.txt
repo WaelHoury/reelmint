@@ -22,9 +22,11 @@ openai  # Used for OpenRouter (OpenAI-compatible API)
 # TTS
 kokoro>=0.9.4
 soundfile
+fish-audio-sdk  # Fish Audio S2 TTS (optional — only needed if fish provider enabled)
 
 # Utilities
 python-dotenv
+python-multipart  # Required for FastAPI file uploads
 tqdm
 slowapi
 

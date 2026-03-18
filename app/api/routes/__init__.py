@@ -8,6 +8,7 @@ from .config import router as config_router
 from .auth import router as auth_router
 from .library import router as library_router
 from .editor import router as editor_router
+from .tts import router as tts_router
 
 __all__ = [
     'sessions_router',
@@ -18,4 +19,5 @@ __all__ = [
     'auth_router',
     'library_router',
     'editor_router',
+    'tts_router',
 ]

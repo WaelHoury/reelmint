@@ -2,6 +2,7 @@
 
 from .session import (
     SessionSettings,
+    TTSSelection,
     CreateSessionRequest,
     SessionResponse,
     SessionListResponse,
@@ -27,6 +28,7 @@ from .video import (
 __all__ = [
     # Session
     'SessionSettings',
+    'TTSSelection',
     'CreateSessionRequest',
     'SessionResponse',
     'SessionListResponse',

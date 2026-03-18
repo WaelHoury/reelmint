@@ -194,4 +194,9 @@ def r2_video_prefix(user_id: int, video_id: int) -> str:
 
 
 # Global singleton — initialised once at import time
+def r2_tts_preview_key(user_id: int, fish_voice_id: str) -> str:
+    """R2 key for a private cloned Fish voice preview clip."""
+    return f"users/{user_id}/tts/fish/{fish_voice_id}/preview.wav"
+
+
 r2_storage = R2StorageService()

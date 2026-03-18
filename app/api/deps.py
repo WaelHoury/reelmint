@@ -49,6 +49,37 @@ def get_current_user_from_token_param(
     return user
 
 
+def get_current_user_from_header_or_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
+    token: str | None = Query(default=None, alias="token"),
+    db: Session = Depends(get_db),
+) -> User:
+    """Authenticate via bearer header or `?token=` query param."""
+    token_value = credentials.credentials if credentials else token
+    if not token_value:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+        )
+
+    payload = decode_jwt(token_value)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+        )
+
+    user_id = int(payload["sub"])
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+
+    return user
+
+
 def get_owned_session(session_id: str, user: User) -> VideoSession:
     """Fetch a session and verify the current user owns it.
 

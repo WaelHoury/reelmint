@@ -151,6 +151,45 @@ export function getThumbnailUrl(videoId) {
   return `/api/videos/${videoId}/thumbnail?token=${_getToken()}`
 }
 
+// === TTS / Voices ===
+
+export function getVoiceCatalog() {
+  return api.get('/tts/catalog')
+}
+
+export function getVoicePreviewUrl(voiceKey) {
+  return `/api/tts/preview?voice_key=${encodeURIComponent(voiceKey)}&token=${_getToken()}`
+}
+
+export function getVoicePreview(voiceKey) {
+  return api.get('/tts/preview', {
+    params: { voice_key: voiceKey },
+    responseType: 'blob',
+  })
+}
+
+export function updateSessionTTS(sessionId, ttsSelection) {
+  return api.put(`/sessions/${sessionId}/tts`, ttsSelection)
+}
+
+export function listFishVoices() {
+  return api.get('/tts/fish/voices')
+}
+
+export function createFishVoice(formData) {
+  return api.post('/tts/fish/voices', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+export function getFishVoice(voiceId) {
+  return api.get(`/tts/fish/voices/${voiceId}`)
+}
+
+export function deleteFishVoice(voiceId) {
+  return api.delete(`/tts/fish/voices/${voiceId}`)
+}
+
 // === Editor ===
 
 export function getSessionEditorData(sessionId) {

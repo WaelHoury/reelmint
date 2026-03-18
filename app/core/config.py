@@ -38,8 +38,14 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
     # === TTS ===
-    tts_engine: Literal["kokoro", "piper", "orpheus", "chatterbox"] = "kokoro"
+    tts_engine: Literal["kokoro", "piper", "orpheus", "chatterbox"] = "kokoro"  # Legacy fallback
     words_per_second: Optional[float] = None  # Override, or calculated from engine
+
+    # Provider-based TTS (new)
+    tts_enabled_providers: str = "kokoro"  # Comma-separated: kokoro,chatterbox,fish
+    tts_default_provider: str = "kokoro"
+    tts_default_voice_key: str = "kokoro:af_heart"  # provider:voice_id
+    tts_preview_text: str = "Welcome to AI Video Maker. This is a preview of how your narration will sound."
 
     # Kokoro
     kokoro_voice: str = "af_heart"
@@ -57,6 +63,17 @@ class Settings(BaseSettings):
     chatterbox_exaggeration: float = 0.5
     chatterbox_cfg: float = 0.5
     chatterbox_voice_ref: str = ""
+
+    # Fish Audio
+    fish_audio_api_key: str = ""
+    fish_audio_model: str = "s2-pro"
+    fish_preset_voice_ids: str = ""  # Comma-separated Fish voice IDs for app-curated presets
+    fish_audio_words_per_second: float = 3.0
+    fish_public_voices_enabled: bool = False
+    fish_public_voice_page_size: int = 24
+    fish_public_voice_page_number: int = 1
+    fish_public_voice_sort_by: str = "score"
+    fish_public_voice_cache_seconds: int = 900
 
     # === Video Search (Pexels) ===
     pexels_api_key: str = ""
@@ -208,14 +225,23 @@ def get_resolution(orientation: str) -> tuple:
     return RESOLUTIONS.get(orientation, LANDSCAPE_RESOLUTION)
 
 
-def get_words_per_second() -> float:
-    """Calculate words per second based on TTS engine and settings."""
+def get_words_per_second(provider: str = None) -> float:
+    """Calculate words per second based on TTS engine and settings.
+
+    Args:
+        provider: Optional TTS provider name to use for calculation.
+                  If None, falls back to legacy tts_engine setting.
+    """
     if settings.words_per_second:
         return settings.words_per_second
 
-    if settings.tts_engine == "kokoro":
+    engine = provider or settings.tts_default_provider or settings.tts_engine
+
+    if engine == "kokoro":
         return 3.0 * settings.kokoro_speed
-    elif settings.tts_engine == "chatterbox":
+    elif engine == "chatterbox":
         return 2.5
+    elif engine == "fish":
+        return settings.fish_audio_words_per_second
     else:
         return 3.0

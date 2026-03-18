@@ -34,6 +34,11 @@ const routes = [
     component: () => import('../views/MyVideos.vue'),
   },
   {
+    path: '/voices',
+    name: 'voices',
+    component: () => import('../views/VoicesPage.vue'),
+  },
+  {
     path: '/account',
     name: 'account',
     component: () => import('../views/AccountPage.vue'),

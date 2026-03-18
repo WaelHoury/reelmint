@@ -11,7 +11,7 @@ const props = defineProps({
   sessionData: { type: Object, default: null },
 })
 
-const emit = defineEmits(['reset'])
+const emit = defineEmits(['completed', 'reset'])
 
 const status = ref('idle') // idle | queued | processing | completed | failed
 const progressPercent = ref(0)
@@ -113,6 +113,7 @@ onMounted(async () => {
     }
     if (data.status === 'completed') {
       status.value = 'completed'
+      emit('completed')
       return
     }
     if (data.status === 'failed') {
@@ -178,6 +179,7 @@ function startPolling() {
         pollTimer = null
 
         if (data.status === 'completed') {
+          emit('completed')
           ElMessage.success('Video generated successfully!')
         } else {
           ElMessage.error('Video generation failed')
@@ -272,18 +274,18 @@ async function applySubtitleChanges() {
 
       <!-- Action Buttons -->
       <div class="action-buttons">
-        <el-button type="primary" size="large" @click="downloadVideo">
+        <button type="button" class="btn-primary-glow action-btn action-btn-download" @click="downloadVideo">
           <el-icon><Download /></el-icon> Download Video
-        </el-button>
-        <el-button type="success" size="large" @click="router.push(`/editor/session/${props.sessionId}`)">
+        </button>
+        <button type="button" class="btn-secondary action-btn action-btn-edit" @click="router.push(`/editor/session/${props.sessionId}`)">
           <el-icon><Edit /></el-icon> Edit Video
-        </el-button>
-        <el-button size="large" @click="showSubtitleEditor = !showSubtitleEditor">
+        </button>
+        <button type="button" class="btn-secondary action-btn" @click="showSubtitleEditor = !showSubtitleEditor">
           <el-icon><EditPen /></el-icon> {{ showSubtitleEditor ? 'Hide' : 'Customize' }} Subtitles
-        </el-button>
-        <el-button size="large" @click="emit('reset')">
+        </button>
+        <button type="button" class="btn-secondary action-btn action-btn-new" @click="emit('reset')">
           <el-icon><Plus /></el-icon> Create New Video
-        </el-button>
+        </button>
       </div>
 
       <!-- Subtitle Editor -->
@@ -473,6 +475,37 @@ async function applySubtitleChanges() {
   justify-content: center;
   margin-top: 20px;
   flex-wrap: wrap;
+}
+
+.action-btn {
+  min-width: 180px;
+  min-height: 46px;
+  font-weight: 600;
+}
+
+.action-btn-download {
+  box-shadow: 0 10px 30px -10px rgba(109, 40, 217, 0.55);
+}
+
+.action-btn-edit {
+  border-color: rgba(74, 222, 128, 0.4);
+  color: #bbf7d0;
+  background: rgba(22, 163, 74, 0.12);
+}
+
+.action-btn-edit:hover {
+  border-color: #4ade80;
+  color: #fff;
+  background: rgba(22, 163, 74, 0.22);
+}
+
+.action-btn-new {
+  border-color: rgba(167, 139, 250, 0.35);
+  color: var(--ce-purple-light);
+}
+
+.action-btn-new:hover {
+  border-color: var(--ce-purple-light);
 }
 
 .subtitle-editor {

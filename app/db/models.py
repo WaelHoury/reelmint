@@ -1,7 +1,7 @@
-"""SQLAlchemy models for User and Video tables."""
+"""SQLAlchemy models for User, Video, and UserTTSVoice tables."""
 
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, BigInteger, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, BigInteger, Boolean, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 
 from app.db.base import Base
@@ -19,6 +19,7 @@ class User(Base):
     last_login_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     videos = relationship("Video", back_populates="user", cascade="all, delete-orphan")
+    tts_voices = relationship("UserTTSVoice", back_populates="user", cascade="all, delete-orphan")
 
 
 class Video(Base):
@@ -42,6 +43,25 @@ class Video(Base):
     r2_thumbnail_key = Column(String(512), nullable=True)
     r2_project_prefix = Column(String(512), nullable=True)
     render_version = Column(Integer, default=1, server_default="1", nullable=False)
+    tts_provider = Column(String(50), nullable=True)
+    tts_voice_key = Column(String(255), nullable=True)
+    tts_voice_label = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="videos")
+
+
+class UserTTSVoice(Base):
+    """Tracks user-created (cloned) TTS voices."""
+
+    __tablename__ = "user_tts_voices"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    fish_voice_id = Column(String(255), nullable=False, unique=True)
+    title = Column(String(255), nullable=False)
+    status = Column(String(50), default="processing")  # processing, ready, failed
+    is_preset = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", back_populates="tts_voices")

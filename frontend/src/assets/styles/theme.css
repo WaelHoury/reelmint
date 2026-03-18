@@ -597,26 +597,46 @@ body::after {
   --el-color-success: var(--ce-purple-light);
 }
 
+.el-step__head .el-step__icon,
+.el-step__head .el-step__icon.is-icon,
+.el-step__head .el-step__icon.is-text {
+  border-radius: 999px !important;
+  overflow: hidden !important;
+}
+
 /* Finished step icon */
 .el-step__head.is-finish {
   color: var(--ce-purple-light) !important;
   border-color: var(--ce-purple-light) !important;
 }
 
-.el-step__head.is-finish .el-step__icon {
+.el-step__head.is-finish .el-step__icon,
+.el-step__head.is-finish .el-step__icon.is-icon,
+.el-step__head.is-finish .el-step__icon.is-text {
   background: var(--ce-purple-dark) !important;
   border-color: var(--ce-purple-dark) !important;
+  color: #fff !important;
+  box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.22) !important;
+}
+
+.el-step__head.is-finish .el-step__icon-inner {
+  background: transparent !important;
   color: #fff !important;
 }
 
 .el-step__head.is-finish .el-step__icon .el-step__icon-inner,
 .el-step__head.is-finish .el-step__icon .is-icon,
-.el-step__head.is-finish .el-step__icon .el-icon {
+.el-step__head.is-finish .el-step__icon .el-icon,
+.el-step__head.is-finish .el-step__icon svg,
+.el-step__head.is-finish .el-step__icon path {
   color: #fff !important;
+  fill: currentColor !important;
 }
 
 /* Process (current) step icon */
-.el-step__head.is-process .el-step__icon {
+.el-step__head.is-process .el-step__icon,
+.el-step__head.is-process .el-step__icon.is-icon,
+.el-step__head.is-process .el-step__icon.is-text {
   border-color: var(--ce-purple-light) !important;
   color: var(--ce-purple-light) !important;
   background: transparent !important;
@@ -627,7 +647,9 @@ body::after {
 }
 
 /* Waiting step icon */
-.el-step__head.is-wait .el-step__icon {
+.el-step__head.is-wait .el-step__icon,
+.el-step__head.is-wait .el-step__icon.is-icon,
+.el-step__head.is-wait .el-step__icon.is-text {
   border-color: #333 !important;
   color: var(--ce-text-muted) !important;
   background: transparent !important;

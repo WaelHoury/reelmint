@@ -10,8 +10,14 @@ from app.api.schemas import (
     SessionResponse,
     SessionListResponse,
     SessionSettings,
+    TTSSelection,
 )
+from app.api.schemas.tts import UpdateTTSRequest
 from app.api.services.session_store import session_store
+from app.api.services.tts_service import (
+    resolve_default_tts_selection_for_user,
+    resolve_tts_selection_for_user,
+)
 from app.api.deps import get_current_user, get_owned_session
 from app.api.services.video_service import video_service
 from app.db.base import get_db
@@ -53,6 +59,16 @@ async def create_session(
             )
 
     try:
+        tts_sel = request.tts_selection
+        validated_tts = None
+        if tts_sel:
+            validated_tts = resolve_tts_selection_for_user(
+                provider=tts_sel.provider,
+                voice_key=tts_sel.voice_key,
+                user_id=user.id,
+            )
+        else:
+            validated_tts = resolve_default_tts_selection_for_user(user_id=user.id)
         session = session_store.create(
             title=normalized_title,
             input_type=request.input_type,
@@ -64,6 +80,9 @@ async def create_session(
             orientation=request.orientation,
             narration_style=request.narration_style,
             user_id=user.id,
+            tts_provider=validated_tts.provider if validated_tts else None,
+            tts_voice_key=validated_tts.voice_key if validated_tts else None,
+            tts_voice_label=validated_tts.label if validated_tts else None,
         )
         return _session_to_response(session)
     except ValueError as e:
@@ -108,8 +127,26 @@ async def delete_session(session_id: str, user: User = Depends(get_current_user)
     session_store.delete(session.session_id)
 
 
+@router.put("/{session_id}/tts")
+async def update_session_tts(
+    session_id: str,
+    request: UpdateTTSRequest,
+    user: User = Depends(get_current_user),
+):
+    """Update TTS voice selection for a session."""
+    from app.api.routes.tts import update_session_tts_handler
+    return update_session_tts_handler(session_id, request, user)
+
+
 def _session_to_response(session) -> SessionResponse:
     """Convert session to response model."""
+    tts_sel = None
+    if session.tts_voice_key:
+        tts_sel = TTSSelection(
+            provider=session.tts_provider or session.tts_voice_key.split(":")[0],
+            voice_key=session.tts_voice_key,
+            label=session.tts_voice_label,
+        )
     return SessionResponse(
         session_id=session.session_id,
         status=session.status,
@@ -126,4 +163,5 @@ def _session_to_response(session) -> SessionResponse:
         word_count=session.word_count,
         estimated_duration_seconds=session.estimated_duration_seconds,
         error_message=session.error_message,
+        tts_selection=tts_sel,
     )

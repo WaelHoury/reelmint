@@ -69,7 +69,7 @@ class VideoService:
         if session.input_type == "script":
             # Script already provided, just update word count
             session.word_count = len(session.script_text.split())
-            wps = get_words_per_second()
+            wps = get_words_per_second(provider=session.tts_provider)
             session.estimated_duration_seconds = session.word_count / wps
             session.status = "draft"
             session_store.update(session)
@@ -88,7 +88,7 @@ class VideoService:
         )
 
         duration_minutes = session.duration_seconds / 60
-        wps = get_words_per_second()
+        wps = get_words_per_second(provider=session.tts_provider)
 
         # Generate narration only (clips are generated separately in generate_clips_task)
         narration = planner.generate_narration(
@@ -117,7 +117,7 @@ class VideoService:
         """
         session.script_text = script_text
         session.word_count = len(script_text.split())
-        wps = get_words_per_second()
+        wps = get_words_per_second(provider=session.tts_provider)
         session.estimated_duration_seconds = session.word_count / wps
         session_store.update(session)
         return session
@@ -569,6 +569,15 @@ def generate_video_task(session_id: str):
         output_path = Path(settings.output_dir) / filename
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Build tts_selection dict from session fields
+        tts_sel = None
+        if session.tts_voice_key:
+            tts_sel = {
+                "provider": session.tts_provider,
+                "voice_key": session.tts_voice_key,
+                "label": session.tts_voice_label,
+            }
+
         generate_video(
             prompt=session.prompt,
             duration_minutes=session.duration_seconds / 60,
@@ -580,6 +589,7 @@ def generate_video_task(session_id: str):
             narration_style=session.narration_style,
             intermediate_callback=_save_intermediates,
             pre_selected_clips=session.clips if session.clips else None,
+            tts_selection=tts_sel,
         )
 
         session.status = "completed"
@@ -835,6 +845,38 @@ def regenerate_subtitles(session: VideoSession, subtitle_settings: dict) -> Vide
     subtitle_file = temp_dir / "subtitles_custom.ass"
     word_timestamps = session.word_timestamps
 
+    # Generate heuristic timestamps if empty (e.g. Fish TTS where ASR failed)
+    if not word_timestamps and session.script_text and session.narration_audio_path:
+        narration_path = Path(session.narration_audio_path)
+        if narration_path.exists():
+            from video_assembler import VideoAssembler
+            assembler = VideoAssembler(
+                ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
+                ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe"),
+            )
+            try:
+                total_duration = assembler.get_duration(narration_path)
+                from tts_generator import TTSGenerator
+                words = session.script_text.split()
+                total_weight = sum(TTSGenerator._get_word_weight(w) for w in words)
+                if total_weight > 0:
+                    subtitle_offset = 0.15
+                    t = subtitle_offset
+                    word_timestamps = []
+                    for word in words:
+                        weight = TTSGenerator._get_word_weight(word)
+                        word_dur = total_duration * (weight / total_weight)
+                        word_timestamps.append({
+                            'word': word,
+                            'start': round(t, 3),
+                            'end': round(t + word_dur, 3),
+                        })
+                        t += word_dur
+                    session.word_timestamps = word_timestamps
+                    session_store.update(session)
+            except Exception:
+                pass
+
     if word_timestamps:
         if session.orientation in ('portrait', 'square'):
             sub_gen.generate_karaoke_ass(word_timestamps, subtitle_file)
@@ -960,6 +1002,9 @@ def _save_video_to_db(session, output_path):
             output_filename=output_path.name,
             file_size_bytes=file_size,
             thumbnail_filename=thumb_filename,
+            tts_provider=session.tts_provider,
+            tts_voice_key=session.tts_voice_key,
+            tts_voice_label=session.tts_voice_label,
         )
         db.add(video)
         db.commit()
@@ -1057,6 +1102,9 @@ def _persist_project_files(session, output_path, video_id):
             "prompt": session.prompt,
             "script_text": session.script_text,
             "narration_style": session.narration_style,
+            "tts_provider": session.tts_provider,
+            "tts_voice_key": session.tts_voice_key,
+            "tts_voice_label": session.tts_voice_label,
             "loop_mode": session.loop_mode,
             "transition_duration": session.transition_duration or float(os.getenv("TRANSITION_DURATION", "0.5")),
             "word_timestamps": session.word_timestamps,

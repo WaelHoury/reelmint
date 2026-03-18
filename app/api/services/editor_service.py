@@ -163,6 +163,11 @@ class EditorService:
 
         # Compute subtitle entries from word timestamps
         word_timestamps = project.get("word_timestamps")
+        if not word_timestamps and project.get("script_text"):
+            word_timestamps = self._generate_heuristic_timestamps(project_dir, project)
+            if word_timestamps:
+                project["word_timestamps"] = word_timestamps
+                self.save_project(project_dir, project)
         subtitle_entries = self.compute_subtitle_entries(word_timestamps, orientation) if word_timestamps else []
 
         # Audio info
@@ -398,6 +403,10 @@ class EditorService:
         from subtitle_generator import SubtitleGenerator
 
         word_timestamps = project.get("word_timestamps")
+        if not word_timestamps and project.get("script_text"):
+            word_timestamps = self._generate_heuristic_timestamps(project_dir, project)
+            if word_timestamps:
+                project["word_timestamps"] = word_timestamps
         if not word_timestamps:
             return None
 
@@ -434,6 +443,62 @@ class EditorService:
                 sub_gen.generate_phrase_ass(word_timestamps, subtitle_file)
 
         return subtitle_file
+
+    def _generate_heuristic_timestamps(self, project_dir: Path, project: dict) -> list:
+        """Generate heuristic word timestamps from script text + narration audio duration.
+
+        Used as a fallback when ASR and provider timestamps are both empty.
+        """
+        script_text = project.get("script_text", "").strip()
+        if not script_text:
+            return []
+
+        words = script_text.split()
+        if not words:
+            return []
+
+        # Get narration duration from audio file
+        narration_file = (project.get("audio") or {}).get("narration_file")
+        if not narration_file:
+            return []
+        narration_path = project_dir / narration_file
+        if not narration_path.exists():
+            return []
+
+        import subprocess
+        ffprobe = os.getenv("FFPROBE_PATH", "ffprobe")
+        result = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(narration_path)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return []
+        try:
+            total_duration = float(result.stdout.strip())
+        except (ValueError, TypeError):
+            return []
+
+        # Use syllable-based weighting from TTSGenerator
+        from tts_generator import TTSGenerator
+        total_weight = sum(TTSGenerator._get_word_weight(w) for w in words)
+        if total_weight <= 0:
+            return []
+
+        subtitle_offset = 0.15
+        t = subtitle_offset
+        timestamps = []
+        for word in words:
+            weight = TTSGenerator._get_word_weight(word)
+            word_dur = total_duration * (weight / total_weight)
+            timestamps.append({
+                "word": word,
+                "start": round(t, 3),
+                "end": round(t + word_dur, 3),
+            })
+            t += word_dur
+
+        return timestamps
 
     def _entries_to_word_timestamps(self, entries: list, original_timestamps: list) -> list:
         """Convert edited subtitle entries back to word-level timestamps.

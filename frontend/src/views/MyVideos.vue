@@ -124,7 +124,7 @@ onMounted(fetchVideos)
               <el-button size="small" type="primary" plain @click.stop="router.push(`/editor/video/${video.id}`)">
                 <el-icon><Edit /></el-icon>
               </el-button>
-              <el-button size="small" @click.stop="downloadVideo(video)">
+              <el-button size="small" type="primary" plain @click.stop="downloadVideo(video)">
                 <el-icon><Download /></el-icon>
               </el-button>
               <el-button size="small" type="danger" plain @click.stop="handleDelete(video)">

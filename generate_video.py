@@ -30,7 +30,8 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                    narration_style: str = None,
                    subtitle_settings: dict = None,
                    intermediate_callback=None,
-                   pre_selected_clips: list = None) -> Path:
+                   pre_selected_clips: list = None,
+                   tts_selection: dict = None) -> Path:
     """Generate video from text prompt or script.
 
     Args:
@@ -46,6 +47,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         subtitle_settings: Optional dict to override subtitle style (font, font_size, color, etc.)
         intermediate_callback: Optional function(data: dict) called with intermediate file paths for re-generation
         pre_selected_clips: Optional list of clip dicts from wizard (skips LLM + CLIP scoring)
+        tts_selection: Optional dict with {provider, voice_key, label} for TTS provider routing
 
     Returns:
         Path to generated video file
@@ -112,24 +114,39 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe")
             )
 
-        tts = TTSGenerator(
-            tts_engine=os.getenv("TTS_ENGINE", "kokoro"),
-            # Piper settings
-            piper_executable=os.getenv("PIPER_EXECUTABLE", "piper.exe"),
-            model_path=os.getenv("PIPER_MODEL_PATH"),
-            # Kokoro settings
-            kokoro_voice=os.getenv("KOKORO_VOICE", "af_heart"),
-            kokoro_speed=float(os.getenv("KOKORO_SPEED", "1.0")),
-            kokoro_lang=os.getenv("KOKORO_LANG", "a"),
-            # Orpheus settings
-            orpheus_voice=os.getenv("ORPHEUS_VOICE", "tara"),
-            # Chatterbox settings
-            chatterbox_exaggeration=float(os.getenv("CHATTERBOX_EXAGGERATION", "0.5")),
-            chatterbox_cfg=float(os.getenv("CHATTERBOX_CFG", "0.5")),
-            chatterbox_voice_ref=os.getenv("CHATTERBOX_VOICE_REF", ""),
-            # Common settings
-            ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg")
-        )
+        # TTS setup — use provider registry if tts_selection is provided,
+        # otherwise fall back to legacy TTSGenerator
+        _use_provider_registry = bool(tts_selection and tts_selection.get("voice_key"))
+        tts = None
+        tts_registry = None
+        tts_provider_name = None
+        tts_voice_id = None
+
+        if _use_provider_registry:
+            from app.tts import get_tts_registry
+            from app.tts.registry import parse_voice_key
+            tts_registry = get_tts_registry()
+            tts_provider_name, tts_voice_id = parse_voice_key(tts_selection["voice_key"])
+            requested_provider = (tts_selection.get("provider") or "").strip()
+            if requested_provider and requested_provider != tts_provider_name:
+                raise ValueError(
+                    "tts_selection provider does not match the provider encoded in voice_key"
+                )
+            print(f"  TTS: provider={tts_provider_name}, voice={tts_voice_id}")
+        else:
+            tts = TTSGenerator(
+                tts_engine=os.getenv("TTS_ENGINE", "kokoro"),
+                piper_executable=os.getenv("PIPER_EXECUTABLE", "piper.exe"),
+                model_path=os.getenv("PIPER_MODEL_PATH"),
+                kokoro_voice=os.getenv("KOKORO_VOICE", "af_heart"),
+                kokoro_speed=float(os.getenv("KOKORO_SPEED", "1.0")),
+                kokoro_lang=os.getenv("KOKORO_LANG", "a"),
+                orpheus_voice=os.getenv("ORPHEUS_VOICE", "tara"),
+                chatterbox_exaggeration=float(os.getenv("CHATTERBOX_EXAGGERATION", "0.5")),
+                chatterbox_cfg=float(os.getenv("CHATTERBOX_CFG", "0.5")),
+                chatterbox_voice_ref=os.getenv("CHATTERBOX_VOICE_REF", ""),
+                ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg")
+            )
 
         searcher = VideoSearcher(api_key=os.getenv("PEXELS_API_KEY"))
 
@@ -147,19 +164,21 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         _report(10, "Generating video plan...")
 
         # Adjust words-per-second target based on TTS engine and speed settings.
-        # Manual override takes priority; otherwise use engine-specific defaults.
-        # Chatterbox tends to speak faster, so fewer words = more natural pacing.
-        current_tts_engine = os.getenv("TTS_ENGINE", "kokoro").lower()
         wps_override = os.getenv("WORDS_PER_SECOND", "").strip()
         if wps_override:
             words_per_second = float(wps_override)
-        elif current_tts_engine == "kokoro":
-            kokoro_speed = float(os.getenv("KOKORO_SPEED", "1.0"))
-            words_per_second = 3.0 * kokoro_speed
-        elif current_tts_engine == "chatterbox":
-            words_per_second = 2.5  # Chatterbox speaks faster; fewer words = more natural
+        elif _use_provider_registry:
+            from app.core.config import get_words_per_second as _get_wps
+            words_per_second = _get_wps(provider=tts_provider_name)
         else:
-            words_per_second = 3.0
+            current_tts_engine = os.getenv("TTS_ENGINE", "kokoro").lower()
+            if current_tts_engine == "kokoro":
+                kokoro_speed = float(os.getenv("KOKORO_SPEED", "1.0"))
+                words_per_second = 3.0 * kokoro_speed
+            elif current_tts_engine == "chatterbox":
+                words_per_second = 2.5
+            else:
+                words_per_second = 3.0
 
         loop_mode = os.getenv("ENABLE_VIDEO_LOOP", "false").lower() == "true"
 
@@ -233,7 +252,19 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         narration_raw = temp_dir / "narration_raw.wav"
         narration_audio = temp_dir / "narration.wav"
 
-        raw_path, heuristic_timestamps = tts.generate_with_timestamps(plan.narration, narration_raw)
+        if _use_provider_registry:
+            tts_result = tts_registry.generate(
+                text=plan.narration,
+                provider_name=tts_provider_name,
+                voice_id=tts_voice_id,
+                output_dir=temp_dir,
+                with_timestamps=True,
+            )
+            raw_path = tts_result.audio_path
+            heuristic_timestamps = tts_result.word_timestamps or []
+        else:
+            raw_path, heuristic_timestamps = tts.generate_with_timestamps(plan.narration, narration_raw)
+
         assembler.normalize_audio(raw_path, narration_audio)
         if raw_path.exists() and raw_path != narration_audio:
             raw_path.unlink()
@@ -263,6 +294,25 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 for wt in word_timestamps:
                     wt['start'] *= time_scale
                     wt['end'] *= time_scale
+
+            # Last resort: generate heuristic timestamps from text + audio duration
+            # when both ASR and provider timestamps are empty (e.g. Fish TTS)
+            if not word_timestamps and plan.narration.strip():
+                from tts_generator import TTSGenerator
+                words = plan.narration.split()
+                total_weight = sum(TTSGenerator._get_word_weight(w) for w in words)
+                t = 0.0
+                word_timestamps = []
+                for word in words:
+                    weight = TTSGenerator._get_word_weight(word)
+                    word_dur = total_duration * (weight / total_weight) if total_weight > 0 else 0
+                    word_timestamps.append({
+                        'word': word,
+                        'start': t,
+                        'end': t + word_dur,
+                    })
+                    t += word_dur
+                print(f"  Generated heuristic timestamps from text ({len(word_timestamps)} words, {total_duration:.1f}s)")
 
             subtitle_offset = float(os.getenv("SUBTITLE_OFFSET", "0.15"))
             if subtitle_offset != 0 and word_timestamps:

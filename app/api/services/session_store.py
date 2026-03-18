@@ -45,6 +45,11 @@ class VideoSession:
     script_text: Optional[str] = None
     narration_style: Optional[str] = None
 
+    # TTS selection
+    tts_provider: Optional[str] = None  # "kokoro", "chatterbox", "fish"
+    tts_voice_key: Optional[str] = None  # "provider:voice_id"
+    tts_voice_label: Optional[str] = None  # Human-readable label
+
     # Computed
     word_count: Optional[int] = None
     estimated_duration_seconds: Optional[float] = None
@@ -123,6 +128,9 @@ class SessionStore:
         orientation: str = "landscape",
         narration_style: Optional[str] = None,
         user_id: Optional[int] = None,
+        tts_provider: Optional[str] = None,
+        tts_voice_key: Optional[str] = None,
+        tts_voice_label: Optional[str] = None,
     ) -> VideoSession:
         """Create a new session.
 
@@ -156,9 +164,9 @@ class SessionStore:
         estimated_duration = None
         if script_text:
             word_count = len(script_text.split())
-            # Estimate duration from word count (3 words per second)
+            # Estimate duration from word count using selected provider's WPS
             from app.core.config import get_words_per_second
-            wps = get_words_per_second()
+            wps = get_words_per_second(provider=tts_provider)
             estimated_duration = word_count / wps
             if duration_seconds is None:
                 duration_seconds = int(estimated_duration)
@@ -179,6 +187,9 @@ class SessionStore:
             word_count=word_count,
             estimated_duration_seconds=estimated_duration,
             user_id=user_id,
+            tts_provider=tts_provider,
+            tts_voice_key=tts_voice_key,
+            tts_voice_label=tts_voice_label,
         )
 
         self._save(session)
