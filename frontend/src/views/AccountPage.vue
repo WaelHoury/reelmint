@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { currentUser } from '../stores/auth'
 import { getMyVideos } from '../api'
+import ConnectedAccounts from '../components/publish/ConnectedAccounts.vue'
 
 const videoCount = ref(0)
 
@@ -48,6 +49,8 @@ onMounted(async () => {
         </div>
       </div>
     </div>
+
+    <ConnectedAccounts />
   </div>
 </template>
 

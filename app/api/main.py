@@ -20,6 +20,8 @@ from app.api.routes import (
     library_router,
     editor_router,
     tts_router,
+    publish_router,
+    video_publish_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +163,8 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(library_router, prefix="/api")
 app.include_router(editor_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
+app.include_router(publish_router, prefix="/api")
+app.include_router(video_publish_router, prefix="/api")
 
 
 # Root endpoint

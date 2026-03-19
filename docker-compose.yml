@@ -109,6 +109,32 @@ services:
       - ./models:/app/models
     restart: unless-stopped
 
+  # Publish Worker - Social media upload processor (separate from video generation)
+  publish-worker:
+    build: .
+    command: python run_publish_worker.py
+    cpus: "1.0"
+    mem_limit: "1g"
+    deploy:
+      replicas: 1
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://aivideo:${POSTGRES_PASSWORD:-aivideo_dev}@postgres:5432/aivideo
+      - TEMP_DIR=/app/temp
+      - OUTPUT_DIR=/app/output
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./output:/app/output
+    restart: unless-stopped
+
   # Frontend - Vue 3 + Element Plus
   frontend:
     image: node:20-alpine

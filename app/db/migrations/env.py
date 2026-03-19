@@ -6,7 +6,7 @@ from alembic import context
 
 from app.core.config import settings
 from app.db.base import Base
-from app.db.models import User, Video, UserTTSVoice  # noqa: F401 - ensure models are registered
+from app.db.models import User, Video, UserTTSVoice, SocialAccount, PublishJob  # noqa: F401 - ensure models are registered
 
 config = context.config
 

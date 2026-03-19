@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { getMyVideos, deleteVideo, getLibraryStreamUrl, getLibraryDownloadUrl, getThumbnailUrl } from '../api'
+import PublishDialog from '../components/publish/PublishDialog.vue'
 
 const router = useRouter()
 
@@ -14,6 +15,8 @@ const loading = ref(false)
 
 const playDialog = ref(false)
 const playingVideo = ref(null)
+const publishDialog = ref(false)
+const publishVideo = ref(null)
 
 async function fetchVideos() {
   loading.value = true
@@ -45,6 +48,11 @@ function closePlay() {
 
 function downloadVideo(video) {
   window.open(getLibraryDownloadUrl(video.id), '_blank')
+}
+
+function shareVideo(video) {
+  publishVideo.value = video
+  publishDialog.value = true
 }
 
 async function handleDelete(video) {
@@ -124,6 +132,9 @@ onMounted(fetchVideos)
               <el-button size="small" type="primary" plain @click.stop="router.push(`/editor/video/${video.id}`)">
                 <el-icon><Edit /></el-icon>
               </el-button>
+              <el-button size="small" type="success" plain @click.stop="shareVideo(video)">
+                <el-icon><Upload /></el-icon>
+              </el-button>
               <el-button size="small" type="primary" plain @click.stop="downloadVideo(video)">
                 <el-icon><Download /></el-icon>
               </el-button>
@@ -156,6 +167,14 @@ onMounted(fetchVideos)
         class="dialog-video"
       ></video>
     </el-dialog>
+
+    <!-- Publish Dialog -->
+    <PublishDialog
+      v-if="publishVideo"
+      v-model="publishDialog"
+      :video-id="publishVideo.id"
+      :video-title="publishVideo.title"
+    />
   </div>
 </template>
 

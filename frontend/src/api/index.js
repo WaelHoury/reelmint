@@ -220,4 +220,34 @@ export function getVideoPreviewStreamUrl(videoId) {
   return `/api/videos/${videoId}/editor/preview-stream?token=${_getToken()}`
 }
 
+// === Social Publishing ===
+
+export function getConnectedAccounts() {
+  return api.get('/publish/accounts')
+}
+
+export function startOAuth(provider, returnTo = '/account') {
+  return api.post(`/publish/oauth/${provider}/start`, { return_to: returnTo })
+}
+
+export function disconnectAccount(accountId) {
+  return api.delete(`/publish/accounts/${accountId}`)
+}
+
+export function publishVideo(videoId, payload) {
+  return api.post(`/videos/${videoId}/publish`, payload)
+}
+
+export function getPublishJobs(videoId) {
+  return api.get(`/videos/${videoId}/publish-jobs`)
+}
+
+export function getPublishJob(jobId) {
+  return api.get(`/publish/jobs/${jobId}`)
+}
+
+export function retryPublishJob(jobId) {
+  return api.post(`/publish/jobs/${jobId}/retry`)
+}
+
 export default api

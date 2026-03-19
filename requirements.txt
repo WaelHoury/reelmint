@@ -37,3 +37,8 @@ psycopg2-binary
 # Auth
 google-auth
 python-jose[cryptography]
+
+# Social Publishing
+cryptography
+google-api-python-client
+google-auth-httplib2

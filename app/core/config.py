@@ -165,6 +165,15 @@ class Settings(BaseSettings):
     # === Environment ===
     environment: Literal["development", "production"] = "development"
 
+    # === Social Publishing ===
+    social_token_encryption_key: str = ""  # Fernet key for encrypting OAuth tokens
+    social_enabled_providers: str = ""     # Comma-separated: youtube,tiktok,instagram
+
+    # YouTube OAuth (separate from Google sign-in)
+    youtube_client_id: str = ""
+    youtube_client_secret: str = ""
+    youtube_redirect_uri: str = "http://localhost:8000/api/publish/oauth/youtube/callback"
+
     # === Cloud Storage (Cloudflare R2) ===
     use_r2_storage: bool = False
     r2_account_id: str = ""
@@ -198,6 +207,12 @@ class Settings(BaseSettings):
             if missing:
                 raise ValueError(
                     f"USE_R2_STORAGE is enabled but required credentials are missing: {', '.join(missing)}"
+                )
+        if self.environment == "production" and self.social_enabled_providers:
+            if not self.social_token_encryption_key:
+                raise ValueError(
+                    "SOCIAL_TOKEN_ENCRYPTION_KEY must be set when social providers are enabled in production. "
+                    "Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
                 )
         return self
 
