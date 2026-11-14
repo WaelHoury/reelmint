@@ -2,7 +2,6 @@
 
 import os
 import sys
-import types
 from datetime import datetime
 from types import SimpleNamespace
 from unittest import TestCase
@@ -10,42 +9,6 @@ from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
-# Provide lightweight google auth stubs for environments without google-auth.
-if "google.oauth2" not in sys.modules:
-    google_module = types.ModuleType("google")
-    oauth2_module = types.ModuleType("google.oauth2")
-    id_token_module = types.ModuleType("google.oauth2.id_token")
-    id_token_module.verify_oauth2_token = lambda *args, **kwargs: {}
-    oauth2_module.id_token = id_token_module
-
-    auth_module = types.ModuleType("google.auth")
-    transport_module = types.ModuleType("google.auth.transport")
-    requests_module = types.ModuleType("google.auth.transport.requests")
-    requests_module.Request = object
-    transport_module.requests = requests_module
-    auth_module.transport = transport_module
-
-    google_module.oauth2 = oauth2_module
-    google_module.auth = auth_module
-
-    sys.modules["google"] = google_module
-    sys.modules["google.oauth2"] = oauth2_module
-    sys.modules["google.oauth2.id_token"] = id_token_module
-    sys.modules["google.auth"] = auth_module
-    sys.modules["google.auth.transport"] = transport_module
-    sys.modules["google.auth.transport.requests"] = requests_module
-
-# Provide lightweight jose stubs for environments without python-jose.
-if "jose" not in sys.modules:
-    jose_module = types.ModuleType("jose")
-    jose_module.JWTError = Exception
-    jwt_module = types.ModuleType("jose.jwt")
-    jwt_module.encode = lambda *args, **kwargs: "token"
-    jwt_module.decode = lambda *args, **kwargs: {}
-    jose_module.jwt = jwt_module
-    sys.modules["jose"] = jose_module
-    sys.modules["jose.jwt"] = jwt_module
 
 # Use in-memory SQLite in tests to avoid requiring Postgres drivers at import time.
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
@@ -108,6 +71,9 @@ class SessionDuplicateTitleTests(TestCase):
             word_count=None,
             estimated_duration_seconds=None,
             error_message=None,
+            tts_provider=None,
+            tts_voice_key=None,
+            tts_voice_label=None,
         )
 
     @staticmethod

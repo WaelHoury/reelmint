@@ -62,24 +62,11 @@ def project_lock(project_id: str, timeout: int = 300, blocking_timeout: int = 10
 def sanitize_filename(name: str, max_length: int = 100) -> str:
     """Sanitize a string for safe use as a filename.
 
-    Strips path separators, illegal filesystem characters, control characters,
-    and leading dots. Falls back to 'untitled' if the result is empty.
+    Delegates to the root ``utils.sanitize_filename`` so titles are cleaned the
+    same way everywhere, including characters that break FFmpeg filter strings.
     """
-    name = unicodedata.normalize("NFKC", name)
-    # Remove path separators and null bytes
-    name = name.replace("/", "").replace("\\", "").replace("\0", "")
-    # Remove Windows-illegal characters
-    name = re.sub(r'[<>:"|?*]', '', name)
-    # Remove control characters
-    name = re.sub(r'[\x00-\x1f\x7f]', '', name)
-    # Collapse whitespace
-    name = re.sub(r'\s+', ' ', name).strip()
-    # Remove leading dots (hidden files on Unix)
-    name = name.lstrip('.')
-    # Truncate
-    if len(name) > max_length:
-        name = name[:max_length].rstrip()
-    return name or "untitled"
+    from utils import sanitize_filename as _sanitize
+    return _sanitize(name, max_length=max_length)
 
 
 def parse_range_header(range_header: str, file_size: int) -> Optional[Tuple[int, int]]:

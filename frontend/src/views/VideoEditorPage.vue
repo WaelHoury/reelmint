@@ -155,9 +155,9 @@ const streamUrl = computed(() => {
   if (!editorData.value) return ''
   const t = videoKey.value
   if (isSessionBased.value) {
-    return getSessionPreviewStreamUrl(props.sessionId) + `&_t=${t}`
+    return getSessionPreviewStreamUrl(props.sessionId) + `?_t=${t}`
   }
-  return getVideoPreviewStreamUrl(props.videoId) + `&_t=${t}`
+  return getVideoPreviewStreamUrl(props.videoId) + `?_t=${t}`
 })
 
 // Load editor data

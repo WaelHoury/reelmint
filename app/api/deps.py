@@ -1,83 +1,66 @@
-"""FastAPI dependencies for authentication and database access."""
+"""FastAPI dependencies for the (single, local) user and session ownership.
 
-from fastapi import Depends, HTTPException, Query, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+AI Video Maker is a self-hosted tool without login. Every request acts as
+one local user, created on first use. Ownership columns (``user_id``) are kept
+so the data model stays unchanged.
+"""
+
+from fastapi import Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.base import get_db
 from app.db.models import User
-from app.api.services.auth_service import decode_jwt
 from app.api.services.session_store import session_store, VideoSession
-from app.core.config import settings
 
-security = HTTPBearer()
-optional_security = HTTPBearer(auto_error=False)
+LOCAL_USER_EMAIL = "local@localhost"
+LOCAL_USER_NAME = "Local User"
+LOCAL_USER_EXTERNAL_ID = "local"  # stored in the (legacy) google_id column
 
 
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db),
-) -> User:
-    """Get the authenticated user from JWT token. Raises 401 if invalid."""
-    payload = decode_jwt(credentials.credentials)
-    if payload is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+def get_local_user(db: Session) -> User:
+    """Return the single local user, creating it on first use."""
+    user = db.query(User).filter(User.email == LOCAL_USER_EMAIL).first()
+    if user:
+        return user
 
-    user_id = int(payload["sub"])
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-
+    user = User(
+        google_id=LOCAL_USER_EXTERNAL_ID,
+        email=LOCAL_USER_EMAIL,
+        name=LOCAL_USER_NAME,
+    )
+    db.add(user)
+    try:
+        db.commit()
+    except IntegrityError:
+        # Another request created it concurrently — use that row.
+        db.rollback()
+        user = db.query(User).filter(User.email == LOCAL_USER_EMAIL).first()
+        if user is None:
+            raise
+        return user
+    db.refresh(user)
     return user
 
 
-def get_current_user_from_token_param(
-    token: str = Query(..., alias="token"),
-    db: Session = Depends(get_db),
-) -> User:
-    """Authenticate via ?token= query param. Used for browser-native requests
-    (video <source>, download links) that can't send Authorization headers."""
-    payload = decode_jwt(token)
-    if payload is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
-
-    user_id = int(payload["sub"])
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-
-    return user
+def get_current_user(db: Session = Depends(get_db)) -> User:
+    """Return the local user (no authentication in self-hosted mode)."""
+    return get_local_user(db)
 
 
-def get_current_user_from_header_or_token(
-    credentials: HTTPAuthorizationCredentials | None = Depends(optional_security),
-    token: str | None = Query(default=None, alias="token"),
-    db: Session = Depends(get_db),
-) -> User:
-    """Authenticate via bearer header or `?token=` query param."""
-    token_value = credentials.credentials if credentials else token
-    if not token_value:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
+def get_current_user_from_token_param(db: Session = Depends(get_db)) -> User:
+    """Return the local user. Kept for routes serving browser-native media URLs."""
+    return get_local_user(db)
 
-    payload = decode_jwt(token_value)
-    if payload is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-        )
 
-    user_id = int(payload["sub"])
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found",
-        )
+def get_current_user_from_header_or_token(db: Session = Depends(get_db)) -> User:
+    """Return the local user. Kept for routes that previously accepted either auth form."""
+    return get_local_user(db)
 
-    return user
+
+def get_optional_user(db: Session = Depends(get_db)) -> User | None:
+    """Return the local user (always present in self-hosted mode)."""
+    return get_local_user(db)
 
 
 def get_owned_session(session_id: str, user: User) -> VideoSession:
@@ -96,22 +79,5 @@ def get_owned_session(session_id: str, user: User) -> VideoSession:
 
 
 def is_superuser(user: User) -> bool:
-    """Check if user is a superuser (exempt from per-user limits)."""
-    emails = [e.strip().lower() for e in settings.superuser_emails.split(",") if e.strip()]
-    return user.email.lower() in emails
-
-
-def get_optional_user(
-    credentials: HTTPAuthorizationCredentials = Depends(optional_security),
-    db: Session = Depends(get_db),
-) -> User | None:
-    """Get the authenticated user if a valid token is provided, otherwise None."""
-    if credentials is None:
-        return None
-
-    payload = decode_jwt(credentials.credentials)
-    if payload is None:
-        return None
-
-    user_id = int(payload["sub"])
-    return db.query(User).filter(User.id == user_id).first()
+    """Local single-user mode: no per-user generation limits."""
+    return True

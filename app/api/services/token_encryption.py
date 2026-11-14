@@ -1,14 +1,57 @@
-"""Fernet-based encryption for social account OAuth tokens."""
+"""Fernet-based encryption for social account OAuth tokens.
 
-import base64
-import hashlib
+Key source, in order:
+1. ``SOCIAL_TOKEN_ENCRYPTION_KEY`` env var, if set.
+2. A key generated once and persisted to ``<CACHE_DIR>/.social_token_key``
+   (file mode 0600), reused on later runs and shared by the API and workers
+   as long as they see the same cache directory.
+"""
+
 import logging
+import os
+from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from app.social.youtube import AuthError
+
 logger = logging.getLogger(__name__)
 
+KEY_FILENAME = ".social_token_key"
+
 _fernet = None
+
+
+class TokenDecryptionError(AuthError, ValueError):
+    """Stored token can't be decrypted (e.g. the encryption key changed).
+
+    Subclasses AuthError so the publish worker marks the job as
+    "reconnect_required" instead of failing unexpectedly.
+    """
+
+
+def _key_file_path() -> Path:
+    from app.core.config import settings
+
+    return Path(settings.cache_dir) / KEY_FILENAME
+
+
+def _load_or_create_key_file(path: Path) -> bytes:
+    """Read the persisted key, or generate and atomically create it."""
+    if path.exists():
+        return path.read_bytes().strip()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    key = Fernet.generate_key()
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        # Another process created it first — use theirs.
+        return path.read_bytes().strip()
+    with os.fdopen(fd, "wb") as f:
+        f.write(key)
+    logger.info("Generated social token encryption key at %s", path)
+    return key
 
 
 def _get_fernet() -> Fernet:
@@ -23,19 +66,7 @@ def _get_fernet() -> Fernet:
     if key:
         _fernet = Fernet(key.encode() if isinstance(key, str) else key)
     else:
-        if settings.environment == "production":
-            raise ValueError(
-                "SOCIAL_TOKEN_ENCRYPTION_KEY is required in production. "
-                "Generate with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
-            )
-        # Dev fallback: derive a Fernet key from jwt_secret_key
-        logger.warning(
-            "SOCIAL_TOKEN_ENCRYPTION_KEY not set — deriving dev-only key from JWT_SECRET_KEY. "
-            "Do NOT use this in production."
-        )
-        digest = hashlib.sha256(settings.jwt_secret_key.encode()).digest()
-        derived_key = base64.urlsafe_b64encode(digest)
-        _fernet = Fernet(derived_key)
+        _fernet = Fernet(_load_or_create_key_file(_key_file_path()))
 
     return _fernet
 
@@ -46,8 +77,14 @@ def encrypt_token(plaintext: str) -> str:
 
 
 def decrypt_token(ciphertext: str) -> str:
-    """Decrypt a Fernet-encrypted token. Raises ValueError on bad key/data."""
+    """Decrypt a Fernet-encrypted token.
+
+    Raises TokenDecryptionError (a ValueError and AuthError) on bad key/data.
+    """
     try:
         return _get_fernet().decrypt(ciphertext.encode()).decode()
     except InvalidToken as e:
-        raise ValueError(f"Failed to decrypt token: {e}") from e
+        raise TokenDecryptionError(
+            "Stored account token could not be decrypted (the encryption key may have changed). "
+            "Please disconnect and reconnect the account."
+        ) from e

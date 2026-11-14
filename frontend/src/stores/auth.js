@@ -1,29 +1,24 @@
 import { ref, computed } from 'vue'
-import api from '../api'
+import { getMe } from '../api'
 
-const token = ref(localStorage.getItem('auth_token') || '')
-const user = ref(JSON.parse(localStorage.getItem('auth_user') || 'null'))
+// Self-hosted, single-user app: no login. This just holds the local user's
+// profile (name/email) for display, loaded once from /api/auth/me.
+const user = ref(null)
+let loading = null
 
-export const isAuthenticated = computed(() => !!token.value)
 export const currentUser = computed(() => user.value)
 
-// Set Authorization header on init if token exists
-if (token.value) {
-  api.defaults.headers.common['Authorization'] = `Bearer ${token.value}`
-}
-
-export function setAuth(newToken, newUser) {
-  token.value = newToken
-  user.value = newUser
-  localStorage.setItem('auth_token', newToken)
-  localStorage.setItem('auth_user', JSON.stringify(newUser))
-  api.defaults.headers.common['Authorization'] = `Bearer ${newToken}`
-}
-
-export function logout() {
-  token.value = ''
-  user.value = null
-  localStorage.removeItem('auth_token')
-  localStorage.removeItem('auth_user')
-  delete api.defaults.headers.common['Authorization']
+export function loadCurrentUser() {
+  if (!loading) {
+    loading = getMe()
+      .then(({ data }) => {
+        user.value = data
+        return data
+      })
+      .catch(() => {
+        loading = null
+        return null
+      })
+  }
+  return loading
 }

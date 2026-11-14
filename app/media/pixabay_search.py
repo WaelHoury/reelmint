@@ -25,19 +25,29 @@ class PixabayMediaInfo:
         if media_type == "video":
             self.duration = data.get('duration', 0)
             videos = data.get('videos', {})
-            # Prefer large > medium > small
-            best = videos.get('large', videos.get('medium', videos.get('small', {})))
+            # Prefer large > medium > small > tiny. Pixabay returns a "large"
+            # entry with an empty url when no large rendition exists, so pick
+            # the first rendition that actually has a URL.
+            best = self._first_with_url(videos, ('large', 'medium', 'small', 'tiny'))
             self.download_url = best.get('url', '')
             self.width = best.get('width', 0)
             self.height = best.get('height', 0)
-            preview = videos.get('small', videos.get('tiny', {}))
-            self.preview_url = preview.get('url', self.download_url)
+            preview = self._first_with_url(videos, ('small', 'tiny', 'medium', 'large'))
+            self.preview_url = preview.get('url') or self.download_url
         else:
             self.duration = 0
             self.download_url = data.get('largeImageURL', data.get('webformatURL', ''))
             self.width = data.get('imageWidth', 0)
             self.height = data.get('imageHeight', 0)
             self.preview_url = data.get('webformatURL', self.download_url)
+
+    @staticmethod
+    def _first_with_url(renditions: dict, order) -> dict:
+        for name in order:
+            entry = renditions.get(name) or {}
+            if entry.get('url'):
+                return entry
+        return {}
 
     @property
     def orientation(self) -> str:
@@ -66,6 +76,24 @@ _ORIENTATION_MAP = {
 }
 
 
+# Pixabay rejects queries longer than 100 characters
+_MAX_QUERY_LEN = 100
+
+# Pixabay's API terms ask clients to cache results for 24 hours
+PIXABAY_CACHE_TTL = 86400
+
+
+def _build_query(keywords: List[str]) -> str:
+    """Join keywords into a Pixabay query, truncated at a word boundary."""
+    query = " ".join(k.strip() for k in keywords if k and k.strip())
+    if len(query) <= _MAX_QUERY_LEN:
+        return query
+    cut = query[:_MAX_QUERY_LEN]
+    if query[_MAX_QUERY_LEN] != " " and " " in cut:
+        cut = cut[:cut.rindex(" ")]
+    return cut.strip()
+
+
 class PixabaySearcher:
     """Search and download videos/images from Pixabay."""
 
@@ -80,7 +108,7 @@ class PixabaySearcher:
     def search_videos(self, keywords: List[str], min_duration: float = 5.0,
                       max_results: int = 20,
                       orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[PixabayMediaInfo]:
-        query = " ".join(keywords)
+        query = _build_query(keywords)
         params = {
             'key': self.api_key,
             'q': query,
@@ -112,7 +140,7 @@ class PixabaySearcher:
 
     def search_images(self, keywords: List[str], max_results: int = 10,
                       orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[PixabayMediaInfo]:
-        query = " ".join(keywords)
+        query = _build_query(keywords)
         params = {
             'key': self.api_key,
             'q': query,
@@ -142,6 +170,27 @@ class PixabaySearcher:
 
         return images
 
+    def get_by_id(self, media_id, media_type: str = "video") -> Optional[PixabayMediaInfo]:
+        """Fetch a single Pixabay video or image by its ID.
+
+        Returns None when the item is not found or the request fails.
+        """
+        if media_id is None or media_id == "":
+            return None
+        url = self.IMAGES_URL if media_type == "image" else self.VIDEOS_URL
+        params = {'key': self.api_key, 'id': str(media_id)}
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            hits = response.json().get('hits', [])
+        except Exception as e:
+            logger.warning("Pixabay lookup for %s %s failed: %s", media_type, media_id, e)
+            return None
+        if not hits:
+            return None
+        info = PixabayMediaInfo(hits[0], media_type="image" if media_type == "image" else "video")
+        return info if info.download_url else None
+
     def download(self, media_info: PixabayMediaInfo, output_path: Path,
                  chunk_size: int = 8192) -> Path:
         output_path = Path(output_path)
@@ -161,7 +210,7 @@ class PixabaySearcher:
 class CachedPixabaySearcher(PixabaySearcher):
     """PixabaySearcher with Redis-backed result caching."""
 
-    def __init__(self, api_key: str, redis_client=None, cache_ttl: int = 21600):
+    def __init__(self, api_key: str, redis_client=None, cache_ttl: int = PIXABAY_CACHE_TTL):
         super().__init__(api_key)
         self._redis = redis_client
         self._cache_ttl = cache_ttl

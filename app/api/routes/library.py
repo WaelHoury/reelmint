@@ -18,6 +18,9 @@ from app.utils.helpers import stream_file_response
 
 router = APIRouter(prefix="/videos", tags=["library"])
 
+# Handlers are plain ``def``: they do synchronous DB queries, R2 calls and file
+# deletion, so FastAPI runs them in its threadpool instead of on the event loop.
+
 
 class VideoItem(BaseModel):
     id: int
@@ -38,7 +41,7 @@ class VideoListResponse(BaseModel):
 
 
 @router.get("", response_model=VideoListResponse)
-async def list_videos(
+def list_videos(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: User = Depends(get_current_user),
@@ -75,7 +78,7 @@ def _get_video_path(video: Video) -> Path:
 
 
 @router.get("/{video_id}/stream")
-async def stream_library_video(
+def stream_library_video(
     video_id: int,
     request: Request,
     user: User = Depends(get_current_user_from_token_param),
@@ -99,7 +102,7 @@ async def stream_library_video(
 
 
 @router.get("/{video_id}/download")
-async def download_library_video(
+def download_library_video(
     video_id: int,
     user: User = Depends(get_current_user_from_token_param),
     db: Session = Depends(get_db),
@@ -128,7 +131,7 @@ async def download_library_video(
 
 
 @router.get("/{video_id}/thumbnail")
-async def get_video_thumbnail(
+def get_video_thumbnail(
     video_id: int,
     user: User = Depends(get_current_user_from_token_param),
     db: Session = Depends(get_db),
@@ -154,7 +157,7 @@ async def get_video_thumbnail(
 
 
 @router.delete("/{video_id}", status_code=204)
-async def delete_video(
+def delete_video(
     video_id: int,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),

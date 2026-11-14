@@ -126,6 +126,8 @@ def _clip_to_data(clip: dict) -> ClipData:
         duration_seconds=clip.get('duration_seconds'),
         search_status=clip.get('search_status', 'pending'),
         search_error=clip.get('search_error'),
+        media_type=clip.get('media_type'),
+        provider=clip.get('provider'),
     )
 
 

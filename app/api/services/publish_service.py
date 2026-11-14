@@ -1,5 +1,7 @@
 """Business logic for social publishing — OAuth, account management, and job creation."""
 
+import hashlib
+import hmac
 import json
 import logging
 import secrets
@@ -10,6 +12,7 @@ from rq import Queue
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.api.schemas.publish import DEFAULT_RETURN_TO, safe_return_to
 from app.db.models import SocialAccount, PublishJob, Video
 from app.api.services.token_encryption import encrypt_token, decrypt_token
 from app.social import youtube
@@ -18,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 OAUTH_STATE_TTL = 600  # 10 minutes
 SUPPORTED_PROVIDERS = {"youtube"}
+
+
+def _hash_nonce(nonce: str) -> str:
+    return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
 
 
 class PublishServiceError(Exception):
@@ -45,20 +52,37 @@ class PublishService:
 
     # ── OAuth ─────────────────────────────────────────────────
 
-    def start_oauth(self, user_id: int, provider: str, return_to: str = "/account") -> str:
-        """Generate OAuth state, store in Redis, return auth URL."""
+    def start_oauth(
+        self,
+        user_id: int,
+        provider: str,
+        return_to: str = DEFAULT_RETURN_TO,
+        browser_nonce: str | None = None,
+    ) -> str:
+        """Generate OAuth state, store in Redis, return auth URL.
+
+        ``browser_nonce`` is a random value the route also sets as an HttpOnly
+        cookie. Only its hash is stored with the state; the callback must
+        present the same cookie, which binds the flow to the browser that
+        started it (prevents login-CSRF / attacker account linking).
+        """
         self._validate_provider(provider)
         mod = self._get_provider_module(provider)
 
         state = secrets.token_urlsafe(32)
-        state_data = json.dumps({"user_id": user_id, "provider": provider, "return_to": return_to})
-        self.redis.setex(f"oauth_state:{state}", OAUTH_STATE_TTL, state_data)
+        state_data = {
+            "user_id": user_id,
+            "provider": provider,
+            "return_to": safe_return_to(return_to),
+        }
+        if browser_nonce:
+            state_data["nonce_hash"] = _hash_nonce(browser_nonce)
+        self.redis.setex(f"oauth_state:{state}", OAUTH_STATE_TTL, json.dumps(state_data))
 
         return mod.build_auth_url(state)
 
-    def handle_oauth_callback(self, provider: str, code: str, state: str, db: Session) -> SocialAccount:
-        """Validate state, exchange code, save account."""
-        # One-time state consumption
+    def consume_oauth_state(self, provider: str, state: str, browser_nonce: str | None) -> dict:
+        """Atomically consume (single-use) and validate an OAuth state."""
         raw = self.redis.getdel(f"oauth_state:{state}")
         if not raw:
             raise PublishServiceError("Invalid or expired OAuth state")
@@ -67,7 +91,33 @@ class PublishService:
         if state_data.get("provider") != provider:
             raise PublishServiceError("OAuth state provider mismatch")
 
+        expected_hash = state_data.get("nonce_hash")
+        if not expected_hash or not browser_nonce or not hmac.compare_digest(
+            expected_hash, _hash_nonce(browser_nonce)
+        ):
+            raise PublishServiceError(
+                "OAuth session mismatch — please start the connection again from this browser"
+            )
+
+        state_data["return_to"] = safe_return_to(state_data.get("return_to"))
+        return state_data
+
+    def handle_oauth_callback(
+        self,
+        provider: str,
+        code: str,
+        state: str,
+        db: Session,
+        browser_nonce: str | None = None,
+    ) -> tuple[SocialAccount, str]:
+        """Validate state, exchange code, save account.
+
+        Returns ``(account, return_to)``.
+        """
+        state_data = self.consume_oauth_state(provider, state, browser_nonce)
+
         user_id = state_data["user_id"]
+        return_to = state_data["return_to"]
         mod = self._get_provider_module(provider)
 
         # Exchange code for tokens
@@ -121,15 +171,7 @@ class PublishService:
 
         db.commit()
         db.refresh(account)
-        return account
-
-    def get_return_to(self, state: str) -> str:
-        """Peek at the return_to from a stored OAuth state without consuming it."""
-        raw = self.redis.get(f"oauth_state:{state}")
-        if not raw:
-            return "/account"
-        data = json.loads(raw)
-        return data.get("return_to", "/account")
+        return account, return_to
 
     # ── Account management ────────────────────────────────────
 

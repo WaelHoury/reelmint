@@ -53,7 +53,7 @@ const fontOptions = [
 ]
 
 const videoStreamSrc = computed(() => {
-  return getVideoStreamUrl(props.sessionId) + `&t=${videoKey.value}`
+  return getVideoStreamUrl(props.sessionId) + `?t=${videoKey.value}`
 })
 
 // Scale FFmpeg font size (designed for 1920w) to ~720px player width

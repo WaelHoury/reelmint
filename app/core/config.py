@@ -1,6 +1,5 @@
 """Centralized configuration and settings for AI Video Maker."""
 
-import logging
 import os
 from pathlib import Path
 from typing import Literal, Optional
@@ -25,8 +24,18 @@ class Settings(BaseSettings):
     models_dir: Path = Path("models")
 
     # === LLM Provider ===
-    llm_provider: Literal["ollama", "openrouter"] = "ollama"
+    llm_provider: Literal["ollama", "openrouter", "anthropic", "claude-code"] = "ollama"
     narration_style: str = "viral"
+
+    # Anthropic API (llm_provider=anthropic)
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: str = "claude-opus-5-5"
+    anthropic_effort: str = "medium"
+
+    # Claude Code CLI (llm_provider=claude-code) - uses the CLI's own login,
+    # e.g. a Claude Pro/Max subscription. No API key.
+    claude_code_path: str = "claude"
+    claude_code_model: Optional[str] = None
 
     # Ollama
     ollama_model: str = "qwen2.5:3b"
@@ -53,7 +62,7 @@ class Settings(BaseSettings):
     kokoro_lang: str = "a"
 
     # Piper
-    piper_executable: str = "piper.exe"
+    piper_executable: str = "piper.exe" if os.name == "nt" else "piper"
     piper_model_path: Optional[str] = None
 
     # Orpheus
@@ -145,16 +154,7 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 24
 
     # === Database ===
-    database_url: str = "postgresql://aivideo:aivideo_dev@localhost:5432/aivideo"
-
-    # === Auth ===
-    google_client_id: str = ""
-    jwt_secret_key: str = "change-me-in-production"
-    jwt_algorithm: str = "HS256"
-    jwt_expiry_hours: int = 72
-
-    # === Authorization ===
-    superuser_emails: str = ""  # Comma-separated emails exempt from per-user limits
+    database_url: str = "postgresql+psycopg://aivideo:aivideo_dev@localhost:5432/aivideo"
 
     # === Cleanup ===
     temp_retention_hours: int = 48
@@ -163,13 +163,14 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:3000"
 
     # === Environment ===
+    # "production" deletes local video copies after a successful R2 upload.
     environment: Literal["development", "production"] = "development"
 
     # === Social Publishing ===
-    social_token_encryption_key: str = ""  # Fernet key for encrypting OAuth tokens
+    social_token_encryption_key: str = ""  # Fernet key for OAuth tokens; auto-generated in cache_dir if empty
     social_enabled_providers: str = ""     # Comma-separated: youtube,tiktok,instagram
 
-    # YouTube OAuth (separate from Google sign-in)
+    # YouTube OAuth (for publishing)
     youtube_client_id: str = ""
     youtube_client_secret: str = ""
     youtube_redirect_uri: str = "http://localhost:8000/api/publish/oauth/youtube/callback"
@@ -183,18 +184,21 @@ class Settings(BaseSettings):
     r2_signed_url_expiry_seconds: int = 3600
 
     @model_validator(mode="after")
-    def _validate_production_secrets(self):
-        """Ensure critical secrets are set in production."""
-        if self.environment == "production":
-            if self.jwt_secret_key == "change-me-in-production":
-                raise ValueError(
-                    "JWT_SECRET_KEY must be set to a secure random value in production. "
-                    "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
-                )
-        elif self.jwt_secret_key == "change-me-in-production":
-            logging.getLogger(__name__).warning(
-                "Using default JWT secret key. Set JWT_SECRET_KEY env var before deploying."
-            )
+    def _normalize_database_url(self):
+        """Pin plain postgres URLs to the psycopg (v3) driver we install.
+
+        SQLAlchemy 2.0 maps ``postgresql://`` to psycopg2 and 2.1 maps it to
+        psycopg, so an unpinned URL breaks depending on the installed version.
+        """
+        for prefix in ("postgresql://", "postgres://"):
+            if self.database_url.startswith(prefix):
+                self.database_url = "postgresql+psycopg://" + self.database_url[len(prefix):]
+                break
+        return self
+
+    @model_validator(mode="after")
+    def _validate_r2_settings(self):
+        """Ensure R2 credentials are present when R2 storage is enabled."""
         if self.use_r2_storage:
             missing = [
                 name for name, val in [
@@ -207,12 +211,6 @@ class Settings(BaseSettings):
             if missing:
                 raise ValueError(
                     f"USE_R2_STORAGE is enabled but required credentials are missing: {', '.join(missing)}"
-                )
-        if self.environment == "production" and self.social_enabled_providers:
-            if not self.social_token_encryption_key:
-                raise ValueError(
-                    "SOCIAL_TOKEN_ENCRYPTION_KEY must be set when social providers are enabled in production. "
-                    "Generate one with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
                 )
         return self
 

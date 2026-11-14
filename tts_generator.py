@@ -1,5 +1,6 @@
 """Text-to-speech generation using Piper TTS, Kokoro-82M, or Orpheus TTS with audio normalization."""
 
+import os
 import subprocess
 from pathlib import Path
 import tempfile
@@ -7,8 +8,53 @@ from typing import Optional, Literal, List, Dict
 import numpy as np
 
 
+DEFAULT_PIPER_EXECUTABLE = 'piper.exe' if os.name == 'nt' else 'piper'
+
+# Kokoro lang_code -> Whisper language code
+KOKORO_LANG_TO_WHISPER = {
+    'a': 'en',  # American English
+    'b': 'en',  # British English
+    'e': 'es',  # Spanish
+    'f': 'fr',  # French
+    'h': 'hi',  # Hindi
+    'i': 'it',  # Italian
+    'j': 'ja',  # Japanese
+    'p': 'pt',  # Brazilian Portuguese
+    'z': 'zh',  # Mandarin Chinese
+}
+
+
+def whisper_language_for_kokoro(lang_or_voice: Optional[str]) -> Optional[str]:
+    """Map a Kokoro lang code ('a', 'f', ...) or voice id ('ff_siwis') to a
+    Whisper language code. Returns None (= let Whisper auto-detect) if unknown.
+    """
+    if not lang_or_voice:
+        return None
+    code = str(lang_or_voice).strip().lower()
+    if len(code) >= 3 and code[2] == '_':  # voice id, e.g. 'af_heart'
+        code = code[0]
+    if len(code) != 1:
+        return None
+    return KOKORO_LANG_TO_WHISPER.get(code)
+
+
+def _resolve_whisper_language(language: Optional[str]) -> Optional[str]:
+    """Resolve the language passed to Whisper.
+
+    Explicit argument wins; otherwise WHISPER_LANGUAGE env var; 'auto' or
+    empty means None so Whisper auto-detects (needed for non-English voices).
+    """
+    if language is None:
+        language = os.getenv('WHISPER_LANGUAGE', '')
+    language = (language or '').strip().lower()
+    if not language or language == 'auto':
+        return None
+    return language
+
+
 def transcribe_with_word_timestamps(audio_path: Path,
-                                     whisper_model: str = "base") -> List[Dict]:
+                                     whisper_model: str = "base",
+                                     language: Optional[str] = None) -> List[Dict]:
     """Extract word-level timestamps from audio using faster-whisper ASR.
 
     This provides accurate, audio-derived word timing instead of heuristic
@@ -17,6 +63,8 @@ def transcribe_with_word_timestamps(audio_path: Path,
     Args:
         audio_path: Path to WAV audio file
         whisper_model: Whisper model size ('tiny', 'base', 'small', 'medium')
+        language: Whisper language code (e.g. 'en', 'fr'). None falls back to
+            WHISPER_LANGUAGE env, else auto-detection.
 
     Returns:
         List of {'word': str, 'start': float, 'end': float} dicts,
@@ -33,7 +81,7 @@ def transcribe_with_word_timestamps(audio_path: Path,
         segments, _ = model.transcribe(
             str(audio_path),
             word_timestamps=True,
-            language="en",
+            language=_resolve_whisper_language(language),
         )
 
         word_timestamps = []
@@ -71,7 +119,7 @@ class TTSGenerator:
     def __init__(self,
                  tts_engine: Literal["piper", "kokoro", "orpheus", "chatterbox"] = "kokoro",
                  # Piper settings
-                 piper_executable: str = "piper.exe",
+                 piper_executable: str = DEFAULT_PIPER_EXECUTABLE,
                  model_path: str = None,
                  # Kokoro settings
                  kokoro_voice: str = "af_heart",
@@ -112,6 +160,10 @@ class TTSGenerator:
         self.kokoro_speed = kokoro_speed
         self.kokoro_lang = kokoro_lang
         self._kokoro_pipeline = None  # Lazy initialization
+
+        # Language hint for Whisper word timestamps (None = auto-detect)
+        self.whisper_language = (whisper_language_for_kokoro(kokoro_lang)
+                                 if tts_engine == "kokoro" else None)
 
         # Orpheus settings
         self.orpheus_voice = orpheus_voice

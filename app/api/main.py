@@ -38,7 +38,8 @@ async def _stale_job_cleanup_loop():
         await asyncio.sleep(300)  # Every 5 minutes
         try:
             redis_conn = Redis.from_url(settings.redis_url)
-            sessions = session_store.list_all(limit=200)
+            # No limit: sessions past an arbitrary cap must still be swept
+            sessions = session_store.list_all(limit=None)
 
             for session in sessions:
                 # --- Stale video generation ---
@@ -69,12 +70,18 @@ async def _stale_job_cleanup_loop():
                 # --- Stale clip generation ---
                 elif session.status == "clips_generating":
                     # Clip gen is a daemon thread — check if stuck for >15 min
+                    # Measure from when clip generation started, not session
+                    # creation (a user may spend a long time on the script step).
                     try:
-                        created = datetime.fromisoformat(session.created_at)
-                        if created.tzinfo is None:
-                            created = created.replace(tzinfo=timezone.utc)
                         now = datetime.now(timezone.utc)
-                        age_minutes = (now - created).total_seconds() / 60
+                        started_ts = getattr(session, "clips_started_at", None)
+                        if started_ts:
+                            started = datetime.fromtimestamp(float(started_ts), tz=timezone.utc)
+                        else:
+                            started = datetime.fromisoformat(session.created_at)
+                            if started.tzinfo is None:
+                                started = started.replace(tzinfo=timezone.utc)
+                        age_minutes = (now - started).total_seconds() / 60
                         if age_minutes > 15:
                             logger.warning("Resetting stale clips_generating session %s (>15 min)", session.session_id)
                             session.status = "script_ready"

@@ -1,16 +1,80 @@
 """Test individual components of the video generator.
 
 Useful for debugging and verifying each module works independently.
+
+These are live integration checks: they call Ollama, Piper, Pexels and
+ffmpeg, download videos and write files into the working directory. Under
+pytest they only run when ``RUN_COMPONENT_TESTS=1`` is set *and* the
+service/dependency each one needs is available; otherwise they are skipped.
+They can also be run directly: ``python tests/test_components.py --component all``.
 """
 
 import argparse
+import importlib.util
 import os
+import shutil
+import sys
 from pathlib import Path
-from dotenv import load_dotenv
+from urllib.request import urlopen
 
-load_dotenv()
+import pytest
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional for collection
+    load_dotenv = None
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+if load_dotenv is not None:
+    load_dotenv()
 
 
+def _has_module(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _ollama_running() -> bool:
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    try:
+        with urlopen(f"{base_url}/api/tags", timeout=2):
+            return True
+    except Exception:
+        return False
+
+
+def _piper_available() -> bool:
+    exe = os.getenv("PIPER_EXECUTABLE", "piper.exe" if os.name == "nt" else "piper")
+    model = os.getenv("PIPER_MODEL_PATH")
+    exe_ok = Path(exe).exists() or shutil.which(exe) is not None
+    return exe_ok and bool(model) and Path(model).exists()
+
+
+def _ffmpeg_available() -> bool:
+    return shutil.which(os.getenv("FFMPEG_PATH", "ffmpeg")) is not None and \
+        shutil.which(os.getenv("FFPROBE_PATH", "ffprobe")) is not None
+
+
+_OPT_IN = os.getenv("RUN_COMPONENT_TESTS") == "1"
+_opt_in = pytest.mark.skipif(
+    not _OPT_IN, reason="live component test; set RUN_COMPONENT_TESTS=1 to run"
+)
+_needs_pexels = pytest.mark.skipif(
+    not (os.getenv("PEXELS_API_KEY") and _has_module("video_searcher") and _has_module("requests")),
+    reason="needs PEXELS_API_KEY and video_searcher dependencies",
+)
+
+
+@_opt_in
+@pytest.mark.skipif(
+    not (_OPT_IN and _has_module("ollama") and _ollama_running()),
+    reason="needs the ollama package and a running Ollama server",
+)
 def test_scene_planner():
     """Test scene planning with Ollama."""
     print("\n" + "="*70)
@@ -36,6 +100,8 @@ def test_scene_planner():
     print(f"\n✓ Successfully generated {len(scenes)} scenes")
 
 
+@_opt_in
+@pytest.mark.skipif(not _piper_available(), reason="needs Piper executable and PIPER_MODEL_PATH")
 def test_tts():
     """Test TTS generation."""
     print("\n" + "="*70)
@@ -45,7 +111,7 @@ def test_tts():
     from tts_generator import TTSGenerator
 
     tts = TTSGenerator(
-        piper_executable=os.getenv("PIPER_EXECUTABLE", "piper.exe"),
+        piper_executable=os.getenv("PIPER_EXECUTABLE", "piper.exe" if os.name == "nt" else "piper"),
         model_path=os.getenv("PIPER_MODEL_PATH"),
         ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg")
     )
@@ -65,6 +131,8 @@ def test_tts():
     print(f"  Size: {output.stat().st_size / 1024:.1f} KB")
 
 
+@_opt_in
+@_needs_pexels
 def test_video_search():
     """Test video search."""
     print("\n" + "="*70)
@@ -90,6 +158,12 @@ def test_video_search():
         print()
 
 
+@_opt_in
+@_needs_pexels
+@pytest.mark.skipif(
+    not (_has_module("open_clip") and _has_module("torch")),
+    reason="needs open_clip and torch",
+)
 def test_clip_matching():
     """Test CLIP video scoring (requires downloaded video)."""
     print("\n" + "="*70)
@@ -139,6 +213,9 @@ def test_clip_matching():
         print(f"  {path.name}: {score:.4f}")
 
 
+@_opt_in
+@_needs_pexels
+@pytest.mark.skipif(not _ffmpeg_available(), reason="needs ffmpeg and ffprobe")
 def test_video_assembly():
     """Test video assembly operations."""
     print("\n" + "="*70)

@@ -1,12 +1,104 @@
-"""Scene planning using LLM (Ollama or OpenRouter) to generate structured video scenes."""
+"""Scene planning: an LLM (Ollama, OpenRouter or Claude) writes the narration and shot plan."""
 
 import json
+import os
 import re
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
-import ollama
 
 from token_counter import TokenCounter
+
+
+def extract_json_payload(content: str) -> str:
+    """Extract the JSON object/array from a raw LLM response.
+
+    Handles <think> blocks, ```json fences, and leading/trailing prose by
+    slicing from the first '{' or '[' to the matching last '}' or ']'.
+    Returns the (possibly unchanged) string; json.loads decides validity.
+    """
+    if content is None:
+        return ''
+    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+
+    fence = re.search(r'```(?:json|JSON)?\s*\n?(.*?)\n?```', content, re.DOTALL)
+    if fence:
+        content = fence.group(1).strip()
+
+    starts = [i for i in (content.find('{'), content.find('[')) if i != -1]
+    if not starts:
+        return content
+    start = min(starts)
+    closer = '}' if content[start] == '{' else ']'
+    end = content.rfind(closer)
+    if end > start:
+        return content[start:end + 1]
+    return content[start:]
+
+
+def parse_llm_json(content: str):
+    """Parse a raw LLM response into Python data (raises json.JSONDecodeError)."""
+    return json.loads(extract_json_payload(content))
+
+
+def extract_clips_list(data) -> list:
+    """Return the clips list from parsed LLM JSON.
+
+    Accepts either {"clips": [...]} or a bare top-level list of clips.
+    Raises ValueError (retryable) for any other shape.
+    """
+    if isinstance(data, list):
+        clips = data
+    elif isinstance(data, dict) and isinstance(data.get('clips'), list):
+        clips = data['clips']
+    else:
+        raise ValueError("LLM response has no 'clips' array")
+    clips = [c for c in clips if isinstance(c, dict)]
+    if not clips:
+        raise ValueError("LLM response contains no clip objects")
+    return clips
+
+
+# Function words that must never be promoted to stock-footage keywords
+KEYWORD_STOPWORDS = frozenset({
+    'a', 'an', 'the', 'and', 'or', 'but', 'nor', 'so', 'yet', 'for', 'of', 'to',
+    'in', 'on', 'at', 'by', 'up', 'as', 'is', 'it', 'its', 'be', 'are', 'was',
+    'were', 'been', 'being', 'am', 'has', 'have', 'had', 'having', 'do', 'does',
+    'did', 'doing', 'can', 'could', 'will', 'would', 'shall', 'should', 'may',
+    'might', 'must', 'not', 'no', 'yes', 'all', 'any', 'each', 'every', 'few',
+    'more', 'most', 'other', 'some', 'such', 'only', 'own', 'same', 'than',
+    'too', 'very', 'just', 'also', 'then', 'there', 'here', 'when', 'where',
+    'why', 'how', 'what', 'which', 'who', 'whom', 'whose', 'this', 'that',
+    'these', 'those', 'with', 'without', 'within', 'from', 'into', 'onto',
+    'over', 'under', 'above', 'below', 'between', 'through', 'during', 'before',
+    'after', 'while', 'about', 'against', 'along', 'around', 'across', 'behind',
+    'beside', 'near', 'off', 'out', 'down', 'again', 'once', 'until', 'upon',
+    'toward', 'towards', 'via', 'per', 'his', 'her', 'hers', 'him', 'she', 'he',
+    'they', 'them', 'their', 'theirs', 'our', 'ours', 'we', 'us', 'you', 'your',
+    'yours', 'my', 'mine', 'me', 'one', 'two', 'three', 'itself',
+    'herself', 'himself', 'themselves', 'someone', 'something', 'another',
+    # Shot-description filler
+    'close', 'closeup', 'wide', 'shot', 'shots', 'showing', 'shows', 'view',
+    'scene', 'camera', 'angle', 'visual', 'slowly', 'quickly', 'moving',
+    'reveals', 'revealing', 'footage', 'video', 'clip', 'frame', 'background',
+    'foreground', 'slow', 'motion', 'aerial', 'pan', 'zoom', 'detail',
+})
+
+
+def _normalize_keyword_list(keywords) -> list:
+    """Coerce LLM keyword output into a list of non-empty strings."""
+    if keywords is None:
+        return []
+    if isinstance(keywords, str):
+        keywords = keywords.split(',')
+    elif not isinstance(keywords, (list, tuple)):
+        return []
+    result = []
+    for k in keywords:
+        if isinstance(k, str):
+            k = k.strip().strip('"\'').strip()
+            if k:
+                result.append(k)
+    return result
 
 
 class Scene(BaseModel):
@@ -17,7 +109,7 @@ class Scene(BaseModel):
     target_seconds: float = Field(..., ge=2.0, lt=15.0)  # Allow 2-15s scenes (fast pacing)
     visual_description: str = Field(..., min_length=10, max_length=300)
 
-    # NEW: Multiple clips per scene support
+    # Multiple clips per scene support
     num_clips: int = Field(default=1, ge=1, le=4, description="Number of video clips for this scene (1-4)")
     clip_keywords: List[List[str]] = Field(
         default_factory=list,
@@ -196,37 +288,46 @@ class ScenePlanner:
 
     @staticmethod
     def _refine_keywords(clips: list) -> list:
-        """Post-process clip keywords: remove abstract words, supplement from visual_description."""
+        """Post-process clip keywords: remove abstract words, supplement from visual_description.
+
+        - Keywords given as a comma-separated string are split into a list.
+        - Words promoted from the description skip stopwords/shot filler.
+        - If refinement would leave fewer than 2 keywords (VisualClip minimum),
+          the original keywords are kept so valid LLM output isn't rejected.
+        """
         for clip in clips:
             if isinstance(clip, dict):
-                keywords = clip.get('keywords', [])
+                raw_keywords = clip.get('keywords', [])
                 desc = clip.get('visual_description', '')
             else:
-                keywords = clip.keywords
+                raw_keywords = clip.keywords
                 desc = clip.visual_description
+            if not isinstance(desc, str):
+                desc = ''
+
+            original = _normalize_keyword_list(raw_keywords)
 
             # Filter out abstract words
-            filtered = [k for k in keywords if k.lower().strip() not in ScenePlanner.ABSTRACT_BLOCKLIST]
+            filtered = [k for k in original
+                        if k.lower().strip() not in ScenePlanner.ABSTRACT_BLOCKLIST]
 
             # If too many were removed, extract nouns from visual_description
             if len(filtered) < 2 and desc:
-                common = {'the', 'and', 'with', 'from', 'that', 'this', 'into',
-                          'over', 'through', 'during', 'while', 'close', 'wide',
-                          'shot', 'showing', 'view', 'scene', 'camera', 'angle',
-                          'visual', 'slowly', 'quickly', 'moving', 'reveals'}
+                existing = {k.lower() for k in filtered}
                 desc_words = re.findall(r'\b[a-z]{3,}\b', desc.lower())
-                candidates = [w for w in desc_words
-                              if w not in ScenePlanner.ABSTRACT_BLOCKLIST
-                              and w not in common
-                              and w not in [k.lower() for k in filtered]]
-                # Deduplicate while preserving order
                 seen = set()
                 unique = []
-                for c in candidates:
-                    if c not in seen:
-                        seen.add(c)
-                        unique.append(c)
-                filtered.extend(unique[:3 - len(filtered)])
+                for w in desc_words:
+                    if (w in ScenePlanner.ABSTRACT_BLOCKLIST or w in KEYWORD_STOPWORDS
+                            or w in existing or w in seen):
+                        continue
+                    seen.add(w)
+                    unique.append(w)
+                filtered.extend(unique[:max(0, 3 - len(filtered))])
+
+            # Never drop below the VisualClip minimum; fall back to the original
+            if len(filtered) < 2 and len(original) >= 2:
+                filtered = original
 
             if isinstance(clip, dict):
                 clip['keywords'] = filtered[:5]
@@ -301,7 +402,7 @@ KEYWORDS: Use only filmable nouns — things you can point a camera at.
 Output ONLY valid JSON, no markdown or explanation."""
 
     def __init__(self,
-                 provider: Literal["ollama", "openrouter"] = "ollama",
+                 provider: Literal["ollama", "openrouter", "anthropic", "claude-code"] = "ollama",
                  model: str = "qwen2.5:3b",
                  base_url: str = "http://localhost:11434",
                  api_key: Optional[str] = None,
@@ -309,8 +410,10 @@ Output ONLY valid JSON, no markdown or explanation."""
         """Initialize scene planner.
 
         Args:
-            provider: LLM provider to use ('ollama' or 'openrouter')
-            model: Model name (Ollama model or OpenRouter model ID)
+            provider: LLM provider: 'ollama', 'openrouter', 'anthropic' (Anthropic API)
+                or 'claude-code' (local Claude Code CLI, uses its own login)
+            model: Model name (Ollama model, OpenRouter model ID, or Claude model;
+                for claude-code an empty value uses the CLI's default)
             base_url: API base URL (Ollama URL or OpenRouter URL)
             api_key: API key (required for OpenRouter, not needed for Ollama)
             narration_style: Script style ('viral', 'informative', 'funny', 'storytelling', 'motivational', 'creative')
@@ -325,6 +428,23 @@ Output ONLY valid JSON, no markdown or explanation."""
         if provider == "openrouter" and not api_key:
             raise ValueError("OpenRouter requires an API key (OPENROUTER_API_KEY)")
 
+        self._claude = None
+        if provider == "anthropic":
+            from claude_llm import AnthropicChat
+            self._claude = AnthropicChat(api_key=api_key, model=model or None)
+            self.model = self._claude.model
+        elif provider == "claude-code":
+            from claude_llm import ClaudeCodeChat
+            self._claude = ClaudeCodeChat(executable=base_url or None, model=model or None)
+            self.model = model or "claude-code"
+
+        # Ollama client bound to the configured host (e.g. host.docker.internal
+        # in Docker). Module-level ollama.chat() would ignore base_url.
+        self._ollama_client = None
+        if provider == "ollama":
+            import ollama
+            self._ollama_client = ollama.Client(host=base_url)
+
     def _call_ollama(self, messages: list, temperature: float = 0.7) -> str:
         """Call Ollama API and return the response content.
 
@@ -335,7 +455,10 @@ Output ONLY valid JSON, no markdown or explanation."""
         Returns:
             Response content string
         """
-        response = ollama.chat(
+        if self._ollama_client is None:
+            import ollama
+            self._ollama_client = ollama.Client(host=self.base_url)
+        response = self._ollama_client.chat(
             model=self.model,
             messages=messages,
             options={
@@ -401,8 +524,10 @@ Output ONLY valid JSON, no markdown or explanation."""
         """
         if self.provider == "openrouter":
             return self._call_openrouter(messages, temperature, stage)
-        else:
-            return self._call_ollama(messages, temperature)
+        if self._claude is not None:
+            # Claude models choose their own sampling; temperature is not sent.
+            return self._claude.chat(messages)
+        return self._call_ollama(messages, temperature)
 
     def get_token_report(self) -> str:
         """Get formatted token usage report.
@@ -465,7 +590,7 @@ Output ONLY the JSON, no other text."""
                 # Success!
                 return scenes
 
-            except (json.JSONDecodeError, ValueError) as e:
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
                 # Debug: Show what the LLM returned
                 print(f"\n  ERROR parsing {self.provider} response (attempt {attempt + 1}/{max_retries}): {str(e)}")
                 if 'content' in locals() and content:
@@ -519,20 +644,19 @@ Each scene must have: narration, keywords (2-5 items), target_seconds (3-60), vi
             json.JSONDecodeError: If JSON parsing fails
             ValueError: If validation fails
         """
-        # Strip markdown code blocks if present
-        content = content.strip()
-        if content.startswith('```'):
-            # Extract content between code fences
-            match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
-            if match:
-                content = match.group(1)
+        # Strip fences/prose and parse JSON
+        data = parse_llm_json(content)
 
-        # Parse JSON
-        data = json.loads(content)
+        if isinstance(data, list):
+            scenes_data = data
+        elif isinstance(data, dict) and isinstance(data.get('scenes'), list):
+            scenes_data = data['scenes']
+        else:
+            raise ValueError("LLM response has no 'scenes' array")
 
         # Validate with Pydantic
         plan = ScenePlan(
-            scenes=[Scene(**scene) for scene in data['scenes']],
+            scenes=[Scene(**scene) for scene in scenes_data if isinstance(scene, dict)],
             total_duration=target_duration
         )
 
@@ -966,7 +1090,7 @@ Output ONLY the JSON, no other text."""
                 plan = self._parse_continuous_plan(content, total_seconds, words_per_second)
                 return plan
 
-            except (json.JSONDecodeError, ValueError) as e:
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
                 print(f"\n  ERROR parsing {self.provider} response (attempt {attempt + 1}/{max_retries}): {str(e)}")
                 if 'content' in locals() and content:
                     print(f"  First 500 chars of response: {content[:500]}")
@@ -1001,15 +1125,13 @@ Include {num_clips} clips."""
         Returns:
             Validated VideoPlan
         """
-        content = content.strip()
-        if content.startswith('```'):
-            match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
-            if match:
-                content = match.group(1)
+        data = parse_llm_json(content)
+        if not isinstance(data, dict):
+            raise ValueError("Expected a JSON object with 'narration' and 'clips'")
 
-        data = json.loads(content)
-
-        narration = data['narration']
+        narration = data.get('narration')
+        if not isinstance(narration, str) or not narration.strip():
+            raise ValueError("LLM response has no 'narration' string")
         expected_words = int(target_duration * words_per_second)
 
         # Truncate narration if too long (at sentence boundary)
@@ -1031,7 +1153,7 @@ Include {num_clips} clips."""
                   f"(target: {expected_words})")
             narration = truncated
 
-        refined_clips = self._refine_keywords(data['clips'])
+        refined_clips = self._refine_keywords(extract_clips_list(data))
         plan = VideoPlan(
             narration=narration,
             clips=[VisualClip(**clip) for clip in refined_clips]
@@ -1177,7 +1299,7 @@ Output ONLY the JSON, no other text."""
                 # Return VideoPlan with original script + generated clips
                 return VideoPlan(narration=script, clips=clips)
 
-            except (json.JSONDecodeError, ValueError) as e:
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
                 print(f"\n  ERROR parsing response (attempt {attempt + 1}/{max_retries}): {str(e)}")
                 if attempt < max_retries - 1:
                     user_prompt = f"""Previous attempt failed: {str(e)}
@@ -1204,14 +1326,8 @@ IMPORTANT: Output ONLY valid JSON with "clips" array. Each clip needs "keywords"
         Returns:
             List of VisualClip objects
         """
-        content = content.strip()
-        if content.startswith('```'):
-            match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
-            if match:
-                content = match.group(1)
-
-        data = json.loads(content)
-        refined = self._refine_keywords(data['clips'])
+        data = parse_llm_json(content)
+        refined = self._refine_keywords(extract_clips_list(data))
         clips = [VisualClip(**clip) for clip in refined]
 
         # Validate reasonable clip count
@@ -1219,3 +1335,47 @@ IMPORTANT: Output ONLY valid JSON with "clips" array. Each clip needs "keywords"
             raise ValueError(f"Too few clips: {len(clips)}, expected ~{expected_clips}")
 
         return clips
+
+
+def create_planner(narration_style: str = "viral",
+                   provider: Optional[str] = None) -> "ScenePlanner":
+    """Build a ScenePlanner for the LLM provider configured in the environment.
+
+    LLM_PROVIDER selects the backend: ollama (default), openrouter, anthropic,
+    or claude-code. Each backend reads its own settings (see .env.example).
+    """
+    provider = (provider or os.getenv("LLM_PROVIDER") or "ollama").strip().lower()
+
+    if provider == "openrouter":
+        return ScenePlanner(
+            provider="openrouter",
+            model=os.getenv("OPENROUTER_MODEL") or "google/gemini-2.0-flash-001",
+            base_url=os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1",
+            api_key=os.getenv("OPENROUTER_API_KEY"),
+            narration_style=narration_style,
+        )
+    if provider == "anthropic":
+        return ScenePlanner(
+            provider="anthropic",
+            model=os.getenv("ANTHROPIC_MODEL") or "claude-opus-5-5",
+            base_url="",
+            api_key=os.getenv("ANTHROPIC_API_KEY") or None,
+            narration_style=narration_style,
+        )
+    if provider == "claude-code":
+        return ScenePlanner(
+            provider="claude-code",
+            model=os.getenv("CLAUDE_CODE_MODEL") or "",
+            base_url=os.getenv("CLAUDE_CODE_PATH") or "claude",
+            narration_style=narration_style,
+        )
+    if provider != "ollama":
+        raise ValueError(
+            f"Unknown LLM_PROVIDER '{provider}'. Use ollama, openrouter, anthropic or claude-code."
+        )
+    return ScenePlanner(
+        provider="ollama",
+        model=os.getenv("OLLAMA_MODEL") or "qwen2.5:3b",
+        base_url=os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434",
+        narration_style=narration_style,
+    )

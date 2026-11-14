@@ -9,6 +9,16 @@ from typing import Dict, List, Optional
 from app.core.config import settings
 
 
+def video_edit_lock_key(output_path) -> str:
+    """Lock key shared by every operation that rewrites a video's output mp4.
+
+    The editor render (session and library routes) and subtitle regeneration
+    must use the same key, or they can overwrite the same file concurrently.
+    The output filename is the one identifier all of them can derive.
+    """
+    return f"video_output:{Path(output_path).name}"
+
+
 class EditorService:
     """Business logic for the video editor."""
 

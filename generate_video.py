@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from scene_planner import ScenePlanner
+from scene_planner import ScenePlanner, create_planner
 from tts_generator import TTSGenerator
 from video_searcher import VideoSearcher
 from app.media.multi_source_searcher import MultiSourceSearcher
@@ -91,21 +91,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         planner = None
         matcher = None
         if not pre_selected_clips:
-            if llm_provider == "openrouter":
-                planner = ScenePlanner(
-                    provider="openrouter",
-                    model=os.getenv("OPENROUTER_MODEL", "google/gemini-2.0-flash-001"),
-                    base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
-                    api_key=os.getenv("OPENROUTER_API_KEY"),
-                    narration_style=narration_style,
-                )
-            else:
-                planner = ScenePlanner(
-                    provider="ollama",
-                    model=os.getenv("OLLAMA_MODEL", "qwen2.5:3b"),
-                    base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-                    narration_style=narration_style,
-                )
+            planner = create_planner(narration_style=narration_style, provider=llm_provider)
 
             matcher = CLIPMatcher(
                 model_name=os.getenv("CLIP_MODEL", "ViT-B-32"),
@@ -137,7 +123,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         else:
             tts = TTSGenerator(
                 tts_engine=os.getenv("TTS_ENGINE", "kokoro"),
-                piper_executable=os.getenv("PIPER_EXECUTABLE", "piper.exe"),
+                piper_executable=os.getenv("PIPER_EXECUTABLE", "piper.exe" if os.name == "nt" else "piper"),
                 model_path=os.getenv("PIPER_MODEL_PATH"),
                 kokoro_voice=os.getenv("KOKORO_VOICE", "af_heart"),
                 kokoro_speed=float(os.getenv("KOKORO_SPEED", "1.0")),
@@ -154,7 +140,9 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         pixabay_searcher = None
         enable_pixabay = os.getenv("ENABLE_PIXABAY", "false").lower() == "true"
         enable_image_fallback = os.getenv("ENABLE_IMAGE_FALLBACK", "false").lower() == "true"
-        if enable_pixabay:
+        # Pixabay is also needed for the image fallback, and to re-fetch
+        # Pixabay clips the user picked in the web wizard.
+        if enable_pixabay or enable_image_fallback or pre_selected_clips:
             pixabay_key = os.getenv("PIXABAY_API_KEY", "")
             if pixabay_key:
                 from app.media.pixabay_search import PixabaySearcher
@@ -292,12 +280,21 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
         # Get accurate word timestamps from ASR (faster-whisper) on the
         # normalized audio — the same file that gets muxed into the video.
         # Falls back to heuristic timestamps if ASR is unavailable.
-        from tts_generator import transcribe_with_word_timestamps
+        from tts_generator import transcribe_with_word_timestamps, whisper_language_for_kokoro
+
+        # Tell Whisper the narration language when we know it (Kokoro voices
+        # encode it); otherwise it auto-detects.
+        if _use_provider_registry:
+            whisper_language = (whisper_language_for_kokoro(tts_voice_id)
+                                if tts_provider_name == "kokoro" else None)
+        else:
+            whisper_language = getattr(tts, "whisper_language", None)
 
         whisper_model = os.getenv("WHISPER_MODEL", "base")
         print(f"  Extracting word timestamps via ASR (model={whisper_model})...")
         asr_timestamps = transcribe_with_word_timestamps(narration_audio,
-                                                          whisper_model=whisper_model)
+                                                          whisper_model=whisper_model,
+                                                          language=whisper_language)
 
         if asr_timestamps:
             word_timestamps = asr_timestamps
@@ -315,7 +312,6 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             # Last resort: generate heuristic timestamps from text + audio duration
             # when both ASR and provider timestamps are empty (e.g. Fish TTS)
             if not word_timestamps and plan.narration.strip():
-                from tts_generator import TTSGenerator
                 words = plan.narration.split()
                 total_weight = sum(TTSGenerator._get_word_weight(w) for w in words)
                 t = 0.0
@@ -384,19 +380,37 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
                 video_id = clip_data.get('video_id')
                 preview_url = clip_data.get('video_preview_url')
-                keywords = clip_data.get('keywords', [])
+                provider = clip_data.get('provider') or 'Pexels'
+                media_type = clip_data.get('media_type') or 'video'
+                is_image = media_type == 'image'
 
-                print(f"\n  Clip {i+1}/{num_clips}: Downloading (Pexels ID: {video_id})...")
+                print(f"\n  Clip {i+1}/{num_clips}: Downloading ({provider} {media_type} ID: {video_id})...")
 
-                # Fetch fresh video info by ID, fallback to stored preview URL
-                download_path = clip_dir / "selected.mp4"
-                video_info = None
-
+                # Fetch fresh media info by ID, fallback to stored preview URL
+                media_info = None
                 if video_id:
-                    video_info = searcher.get_video_by_id(video_id)
+                    try:
+                        media_info = searcher.get_video_by_id(
+                            video_id, provider=provider, media_type=media_type)
+                    except Exception as e:
+                        print(f"    Warning: {provider} lookup failed: {e}")
+                        media_info = None
 
-                if video_info:
-                    searcher.download(video_info, download_path)
+                def _image_ext(url):
+                    path = (url or '').split('?', 1)[0].lower()
+                    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
+                        if path.endswith(ext):
+                            return ext
+                    return '.jpg'
+
+                if is_image:
+                    source_url = media_info.download_url if media_info else preview_url
+                    download_path = clip_dir / f"selected{_image_ext(source_url)}"
+                else:
+                    download_path = clip_dir / "selected.mp4"
+
+                if media_info:
+                    searcher.download(media_info, download_path)
                 elif preview_url:
                     # Fallback: download directly from stored URL
                     import requests as _requests
@@ -408,20 +422,38 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                             if chunk:
                                 f.write(chunk)
                 else:
-                    raise ValueError(f"No video ID or URL for clip {i}")
+                    raise ValueError(f"No media ID or URL for clip {i}")
 
-                # Track asset
+                # Track asset with the clip's actual provider/license
+                if provider == 'Pixabay':
+                    license_name = 'Pixabay License'
+                else:
+                    license_name = 'Pexels License'
                 asset_info = {
                     'url': clip_data.get('author_url', ''),
-                    'author': clip_data.get('author', 'Unknown'),
-                    'provider': 'Pexels',
-                    'license': 'Pexels License'
+                    'author': clip_data.get('author') or 'Unknown',
+                    'provider': provider,
+                    'license': license_name,
                 }
                 with clip_lock:
                     tracker.add_asset(asset_info, i)
 
-                # Process clip: normalize + color grade + trim
                 trimmed_path = clip_dir / "trimmed.mp4"
+                if is_image:
+                    # Still image: render with a Ken Burns effect
+                    from video_assembler import KEN_BURNS_EFFECTS
+                    effect = KEN_BURNS_EFFECTS[i % len(KEN_BURNS_EFFECTS)]
+                    assembler.image_to_video(
+                        download_path, trimmed_path,
+                        duration_sec=clip_duration,
+                        orientation=orientation,
+                        effect=effect,
+                        color_grade_filter=color_grade_filter,
+                    )
+                    print(f"  Clip {i+1}/{num_clips} done (image, {effect})")
+                    return trimmed_path
+
+                # Process clip: normalize + color grade + trim
                 assembler.process_clip(
                     download_path, trimmed_path,
                     duration_sec=clip_duration,
@@ -462,7 +494,10 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 clip_dir.mkdir(exist_ok=True)
 
                 print(f"\n  Clip {i+1}/{num_clips}: Searching for {clip.keywords}...")
-                videos = searcher.search(clip.keywords, max_results=20, orientation=orientation)
+                # Require clips at least as long as the slot so short clips
+                # don't make the video shorter than the narration
+                videos = searcher.search(clip.keywords, min_duration=clip_duration,
+                                         max_results=20, orientation=orientation)
 
                 if not videos:
                     print(f"    Warning: No videos found, trying broader search...")
@@ -471,7 +506,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 if not videos and searcher.enable_image_fallback:
                     # Image fallback: search for still images, convert with Ken Burns
                     print(f"    No videos found. Trying image fallback...")
-                    from app.media.assembler import KEN_BURNS_EFFECTS
+                    from video_assembler import KEN_BURNS_EFFECTS
                     images = searcher.search_images(clip.keywords, max_results=3, orientation=orientation)
                     if images:
                         best_image = images[0]
@@ -526,10 +561,16 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 video_paths = [d['path'] for d in downloaded]
 
                 print(f"    Scoring {len(video_paths)} candidates with CLIP...")
-                scores = matcher.score_videos(video_paths, score_text)
+                scores = matcher.score_videos(video_paths, score_text) or {}
 
-                best_path = max(scores, key=scores.get)
-                best_score = scores[best_path]
+                if scores:
+                    best_path = max(scores, key=scores.get)
+                    best_score = scores[best_path]
+                else:
+                    # Every candidate failed embedding: use the first download
+                    print("    Warning: CLIP scoring failed for all candidates, using first download")
+                    best_path = video_paths[0]
+                    best_score = 0.0
                 best_info = next(d['info'] for d in downloaded if d['path'] == best_path)
 
                 print(f"    Best match: score={best_score:.3f}")
@@ -580,6 +621,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             trimmed_videos[-1] = loop_clip_path
 
         # Non-loop: extend last clip by freezing its final frame (avoids abrupt cut)
+        outro_pad = 0.0
         if not loop_mode:
             outro_duration = float(os.getenv("VIDEO_OUTRO_DURATION", "1.0"))
             if outro_duration > 0 and trimmed_videos:
@@ -606,6 +648,8 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 ]
                 subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
                 trimmed_videos[-1] = extended_path
+                # Pad the audio by the same amount so -shortest keeps the outro
+                outro_pad = outro_duration
 
         # Step 4: Assemble final video
         _step_times['3_clips'] = time.time() - _t0
@@ -627,9 +671,11 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             selector = MusicSelector(music_dir=Path(os.getenv("MUSIC_DIR", "music")))
             music_mood = os.getenv("MUSIC_MOOD", None)
 
+            # prompt is None in CLI --script mode; fall back to the narration
+            music_query = prompt or plan.narration or ""
             try:
-                music_file = selector.select_music(prompt, mood=music_mood)
-                print(f"    Selected music: {music_file.name} (mood: {selector._detect_mood(prompt)})")
+                music_file = selector.select_music(music_query, mood=music_mood)
+                print(f"    Selected music: {music_file.name} (mood: {music_mood or selector._detect_mood(music_query)})")
 
                 mixer = AudioMixer(
                     ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
@@ -643,8 +689,11 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                     music_volume=music_volume
                 )
                 final_audio = mixed_audio
-            except ValueError as e:
-                print(f"    Warning: {e}")
+            except Exception as e:
+                # Music is optional: never let it kill a render
+                music_file = None
+                final_audio = narration_audio
+                print(f"    Warning: background music failed: {e}")
                 print(f"    Continuing without background music")
 
         # Prepare subscribe overlay if enabled
@@ -749,6 +798,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             subscribe_video=subscribe_video_path,
             subscribe_params=subscribe_params,
             fade_duration=fade_dur,
+            audio_pad_duration=outro_pad,
         )
 
         # Save intermediate data for subtitle re-generation and editor
@@ -918,6 +968,8 @@ def main():
     llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
     if llm_provider == "openrouter":
         required_vars.append("OPENROUTER_API_KEY")
+    elif llm_provider == "anthropic":
+        required_vars.append("ANTHROPIC_API_KEY")
 
     tts_engine = os.getenv("TTS_ENGINE", "kokoro").lower()
     if tts_engine == "piper":

@@ -12,6 +12,9 @@ from PIL import Image
 import subprocess
 import json
 import hashlib
+import os
+import tempfile
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -54,18 +57,57 @@ class CLIPMatcher:
         self._load_cache_index()
 
     def _load_cache_index(self):
-        """Load cache index from disk."""
+        """Load cache index from disk.
+
+        A missing, unreadable or corrupted index.json (e.g. from an interrupted
+        write) is treated as an empty cache instead of crashing every run.
+        """
+        if not hasattr(self, '_index_lock'):
+            self._index_lock = threading.Lock()
         self.cache_index_file = self.cache_dir / "index.json"
+        index = {}
         if self.cache_index_file.exists():
-            with open(self.cache_index_file, 'r') as f:
-                self.cache_index = json.load(f)
-        else:
-            self.cache_index = {}
+            try:
+                with open(self.cache_index_file, 'r', encoding='utf-8') as f:
+                    index = json.load(f)
+                if not isinstance(index, dict):
+                    raise ValueError("cache index is not a JSON object")
+            except (OSError, ValueError) as e:
+                print(f"    WARNING: CLIP cache index unreadable ({e}); starting with empty cache")
+                index = {}
+        self.cache_index = index
 
     def _save_cache_index(self):
-        """Save cache index to disk."""
-        with open(self.cache_index_file, 'w') as f:
-            json.dump(self.cache_index, f)
+        """Save cache index to disk atomically.
+
+        Callers may run in parallel threads (score_videos), so the dict is
+        snapshotted under a lock and written via temp file + os.replace so
+        readers never see a half-written index.json.
+        """
+        with self._index_lock:
+            self._write_index_locked()
+
+    def _write_index_locked(self):
+        """Write the index; caller must hold self._index_lock."""
+        snapshot = dict(self.cache_index)
+        fd, tmp_path = tempfile.mkstemp(dir=str(self.cache_dir),
+                                        prefix='index.', suffix='.json.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(snapshot, f)
+            os.replace(tmp_path, self.cache_index_file)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _update_cache_index(self, key: str, value: dict):
+        """Thread-safe insert into the cache index followed by a save."""
+        with self._index_lock:
+            self.cache_index[key] = value
+            self._write_index_locked()
 
     def _get_video_hash(self, video_path: Path) -> str:
         """Generate hash for video based on path, size, and mtime.
@@ -220,7 +262,9 @@ class CLIPMatcher:
         video_hash = self._get_video_hash(video_path)
 
         # Check cache
-        if video_hash in self.cache_index:
+        with self._index_lock:
+            cached = video_hash in self.cache_index
+        if cached:
             cache_file = self.cache_dir / f"{video_hash}.pt"
             if cache_file.exists():
                 return torch.load(cache_file)
@@ -240,11 +284,10 @@ class CLIPMatcher:
         cache_file = self.cache_dir / f"{video_hash}.pt"
         torch.save(frame_embeddings, cache_file)
 
-        self.cache_index[video_hash] = {
+        self._update_cache_index(video_hash, {
             'video_path': str(video_path),
             'cache_file': str(cache_file)
-        }
-        self._save_cache_index()
+        })
 
         # Clean up temp frames
         for frame_path in frame_paths:
@@ -301,8 +344,9 @@ class CLIPMatcher:
         for cache_file in self.cache_dir.glob("*.pt"):
             cache_file.unlink()
 
-        self.cache_index = {}
-        self._save_cache_index()
+        with self._index_lock:
+            self.cache_index = {}
+            self._write_index_locked()
 
     def get_cache_size(self) -> int:
         """Get number of cached video embeddings."""

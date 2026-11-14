@@ -9,13 +9,15 @@ class ClipData(BaseModel):
     index: int = Field(..., ge=0, description="Clip position in video")
     keywords: List[str] = Field(..., min_length=1, description="Search keywords")
     visual_description: str = Field(..., description="Description of what viewer sees")
-    video_preview_url: Optional[str] = Field(default=None, description="Pexels video preview URL (lighter quality)")
-    video_id: Optional[str] = Field(default=None, description="Pexels video ID")
+    video_preview_url: Optional[str] = Field(default=None, description="Preview URL (video, or still image when media_type is image)")
+    video_id: Optional[str] = Field(default=None, description="Provider media ID")
     author: Optional[str] = Field(default=None, description="Video author/photographer")
     author_url: Optional[str] = Field(default=None, description="Author profile URL")
     duration_seconds: Optional[float] = Field(default=None, description="Clip duration")
     search_status: str = Field(default="pending", description="Search status: pending, ready, failed")
     search_error: Optional[str] = Field(default=None, description="Error message if search failed")
+    media_type: Optional[str] = Field(default=None, description="Media type: video or image")
+    provider: Optional[str] = Field(default=None, description="Stock media provider: Pexels or Pixabay")
 
 
 class ClipsResponse(BaseModel):

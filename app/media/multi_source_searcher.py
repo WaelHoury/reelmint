@@ -51,13 +51,25 @@ class MultiSourceSearcher:
             pixabay_future = pool.submit(
                 self.pixabay.search_videos, keywords, min_duration, max_results, orientation)
 
-            pexels_results = pexels_future.result()
+            pexels_error = None
+            try:
+                pexels_results = pexels_future.result()
+            except Exception as e:
+                # e.g. Pexels 429 rate limit: still usable if Pixabay answers
+                logger.warning("Pexels search failed: %s", e)
+                pexels_error = e
+                pexels_results = []
 
+            pixabay_error = None
             try:
                 pixabay_results = pixabay_future.result()
             except Exception as e:
                 logger.warning("Pixabay search failed (non-fatal): %s", e)
+                pixabay_error = e
                 pixabay_results = []
+
+        if pexels_error is not None and pixabay_error is not None:
+            raise pexels_error
 
         merged = self._merge_results(pexels_results, pixabay_results, max_results)
         logger.debug(
@@ -79,9 +91,57 @@ class MultiSourceSearcher:
             logger.warning("Image fallback search failed: %s", e)
             return []
 
+    def get_video_by_id(self, video_id, provider: Optional[str] = "Pexels",
+                        media_type: Optional[str] = "video"):
+        """Fetch fresh media info for a stored clip, routed by provider.
+
+        Pexels IDs go to the Pexels searcher; Pixabay IDs (videos or images)
+        go to the Pixabay searcher. Returns None when not found or when the
+        provider is unavailable.
+        """
+        if video_id is None or video_id == "":
+            return None
+        provider = (provider or "Pexels").strip()
+        media_type = (media_type or "video").strip().lower()
+
+        if provider.lower() == "pixabay":
+            if self.pixabay is None or not hasattr(self.pixabay, "get_by_id"):
+                logger.warning("Pixabay clip %s requested but Pixabay is not configured", video_id)
+                return None
+            try:
+                return self.pixabay.get_by_id(video_id, media_type=media_type)
+            except Exception as e:
+                logger.warning("Pixabay lookup for %s failed: %s", video_id, e)
+                return None
+
+        if media_type == "image":
+            # Pexels images are not supported by this app.
+            return None
+        return self.pexels.get_video_by_id(video_id)
+
+    @property
+    def cache_stats(self) -> dict:
+        """Combined cache stats across providers (hits, misses, hit_rate)."""
+        hits = 0
+        misses = 0
+        sources = [self.pexels]
+        if self.pixabay is not None and (self.enable_pixabay or self.enable_image_fallback):
+            sources.append(self.pixabay)
+        for source in sources:
+            stats = getattr(source, "cache_stats", None)
+            if not isinstance(stats, dict):
+                continue
+            hits += int(stats.get("hits", 0) or 0)
+            misses += int(stats.get("misses", 0) or 0)
+        return {
+            "hits": hits,
+            "misses": misses,
+            "hit_rate": hits / max(1, hits + misses),
+        }
+
     def download(self, media_info, output_path: Path) -> Path:
         """Route download to correct provider based on media_info.provider."""
-        if media_info.provider == "Pixabay":
+        if getattr(media_info, "provider", "Pexels") == "Pixabay":
             return self.pixabay.download(media_info, output_path)
         return self.pexels.download(media_info, output_path)
 

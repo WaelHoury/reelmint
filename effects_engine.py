@@ -13,9 +13,49 @@ class EffectsEngine:
     TRANSITION_TYPES = {
         'crossfade': 'fade',      # Smooth blend between clips
         'dissolve': 'dissolve',   # Similar to crossfade
-        'wipe': 'wipe',          # Directional wipe
-        'slide': 'slide'          # Slide transition
+        'wipe': 'wipeleft',       # Directional wipe (xfade has no bare 'wipe')
+        'slide': 'slideleft',     # Slide transition (xfade has no bare 'slide')
     }
+
+    # Native ffmpeg xfade transition names, accepted as-is
+    XFADE_TRANSITIONS = frozenset({
+        'fade', 'fadeblack', 'fadewhite', 'fadegrays', 'dissolve', 'distance',
+        'wipeleft', 'wiperight', 'wipeup', 'wipedown',
+        'wipetl', 'wipetr', 'wipebl', 'wipebr',
+        'slideleft', 'slideright', 'slideup', 'slidedown',
+        'smoothleft', 'smoothright', 'smoothup', 'smoothdown',
+        'circlecrop', 'rectcrop', 'circleopen', 'circleclose',
+        'vertopen', 'vertclose', 'horzopen', 'horzclose',
+        'radial', 'pixelize', 'diagtl', 'diagtr', 'diagbl', 'diagbr',
+        'hlslice', 'hrslice', 'vuslice', 'vdslice',
+        'hblur', 'squeezeh', 'squeezev', 'zoomin',
+        'coverleft', 'coverright', 'coverup', 'coverdown',
+        'revealleft', 'revealright', 'revealup', 'revealdown',
+    })
+
+    @classmethod
+    def _resolve_transition(cls, transition: Optional[str]) -> str:
+        """Map a friendly transition name to a valid ffmpeg xfade transition."""
+        name = (transition or '').strip().lower()
+        if name in cls.TRANSITION_TYPES:
+            return cls.TRANSITION_TYPES[name]
+        if name in cls.XFADE_TRANSITIONS:
+            return name
+        return 'fade'
+
+    @staticmethod
+    def _escape_filter_path(path) -> str:
+        """Escape a file path for use as a filter option inside -filter_complex.
+
+        FFmpeg parses filtergraphs at two levels, each with its own escaping:
+        1. filter option value: \\ ' : are special
+        2. filtergraph description: \\ ' [ ] , ; are special
+        Escaping both levels lets paths containing apostrophes, colons,
+        commas or brackets (e.g. "Why Earth's Core Is Hot") work.
+        """
+        raw = str(Path(path).resolve()).replace('\\', '/')
+        level1 = ''.join('\\' + c if c in "\\':" else c for c in raw)
+        return ''.join('\\' + c if c in "\\'[],;" else c for c in level1)
 
     def __init__(self, ffmpeg_path: str = "ffmpeg", ffprobe_path: str = "ffprobe"):
         """Initialize effects engine.
@@ -154,7 +194,7 @@ class EffectsEngine:
         if num_clips < 2:
             return f"[0:v]copy{output_tag}"
 
-        transition_type = self.TRANSITION_TYPES.get(transition, 'fade')
+        transition_type = self._resolve_transition(transition)
         filters = []
         cumulative_offset = 0.0
 
@@ -556,9 +596,7 @@ class EffectsEngine:
         # Subsequent filters (appended after overlay or directly on [0:v])
         post_filters = []
         if needs_subtitles:
-            sub_str = str(Path(subtitle_path).resolve()).replace('\\', '/')
-            sub_str = sub_str.replace(':', '\\:')
-            post_filters.append(f"ass='{sub_str}'")
+            post_filters.append(f"ass=filename={self._escape_filter_path(subtitle_path)}")
         if needs_fade:
             fade_start = max(0, video_duration - fade_duration)
             post_filters.append(f"fade=t=out:st={fade_start:.3f}:d={fade_duration}")
@@ -608,7 +646,8 @@ class EffectsEngine:
                             subtitle_path: Path = None,
                             subscribe_video: Path = None,
                             subscribe_params: dict = None,
-                            fade_duration: float = 0) -> Path:
+                            fade_duration: float = 0,
+                            audio_pad_duration: float = 0) -> Path:
         """Concatenate clips with transitions AND apply effects in a single FFmpeg pass.
 
         Combines concat_with_transitions + finalize_video into one encode,
@@ -624,6 +663,9 @@ class EffectsEngine:
             subscribe_video: Optional green-screen subscribe button video
             subscribe_params: Dict with overlay settings
             fade_duration: Fade-to-black duration in seconds (0 = no fade)
+            audio_pad_duration: Seconds of silence appended to the audio so an
+                outro (freeze-frame) longer than the narration is not cut by
+                -shortest (0 = no padding)
 
         Returns:
             Path to final output video
@@ -647,13 +689,26 @@ class EffectsEngine:
         needs_overlay = subscribe_video is not None and Path(subscribe_video).exists()
         needs_subtitles = subtitle_path is not None
         needs_fade = fade_duration > 0
-        needs_effects = needs_overlay or needs_subtitles or needs_fade
+        needs_pad = audio_pad_duration > 0
+        needs_effects = needs_overlay or needs_subtitles or needs_fade or needs_pad
 
         # Get durations for xfade offsets
         clip_durations = [self._get_duration(clip) for clip in clips]
 
         # Calculate total video duration after transitions
         total_duration = sum(clip_durations) - transition_duration * (len(clips) - 1)
+
+        # Output length with -shortest = min(video, padded audio). The fade
+        # must land in the last fade_duration seconds of the actual output.
+        final_duration = total_duration
+        if needs_fade or needs_pad:
+            try:
+                audio_duration = self._get_duration(audio_path)
+                if audio_duration > 0:
+                    final_duration = min(total_duration,
+                                         audio_duration + max(0.0, audio_pad_duration))
+            except Exception:
+                pass
 
         # Build xfade filtergraph — output to intermediate tag if more filters follow
         if needs_effects:
@@ -740,11 +795,9 @@ class EffectsEngine:
         # Subtitles + fade (appended as comma-separated filters)
         post_filters = []
         if needs_subtitles:
-            sub_str = str(Path(subtitle_path).resolve()).replace('\\', '/')
-            sub_str = sub_str.replace(':', '\\:')
-            post_filters.append(f"ass='{sub_str}'")
+            post_filters.append(f"ass=filename={self._escape_filter_path(subtitle_path)}")
         if needs_fade:
-            fade_start = max(0, total_duration - fade_duration)
+            fade_start = max(0, final_duration - fade_duration)
             post_filters.append(f"fade=t=out:st={fade_start:.3f}:d={fade_duration}")
 
         # Assemble the complete filter_complex
@@ -759,12 +812,17 @@ class EffectsEngine:
             if post_filters:
                 video_chain = xfade_filter + ";" + current_input + ",".join(post_filters) + "[outv]"
             else:
-                video_chain = xfade_filter  # Already outputs [outv] (shouldn't reach here)
+                video_chain = xfade_filter + ";" + current_input + "null[outv]"
 
-        # Audio fade
+        # Audio: optional silence padding (for the outro) + fade
+        audio_filters = []
+        if needs_pad:
+            audio_filters.append(f"apad=pad_dur={audio_pad_duration:.3f}")
         if needs_fade:
-            fade_start = max(0, total_duration - fade_duration)
-            filter_complex = video_chain + f";[{audio_idx}:a]afade=t=out:st={fade_start:.3f}:d={fade_duration}[outa]"
+            fade_start = max(0, final_duration - fade_duration)
+            audio_filters.append(f"afade=t=out:st={fade_start:.3f}:d={fade_duration}")
+        if audio_filters:
+            filter_complex = video_chain + f";[{audio_idx}:a]" + ",".join(audio_filters) + "[outa]"
             audio_map = ['-map', '[outa]']
         else:
             filter_complex = video_chain

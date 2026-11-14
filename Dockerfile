@@ -4,8 +4,12 @@
 FROM python:3.11-slim
 
 # Install system dependencies
+# fonts-montserrat: the caption presets use Montserrat Bold
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    fonts-montserrat \
+    fontconfig \
+    && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

@@ -236,7 +236,14 @@ async function handleConfirm() {
           <!-- View mode (ready) -->
           <div v-else-if="editingClip !== clip.index">
             <div class="clip-preview" v-if="clip.video_preview_url">
+              <img
+                v-if="clip.media_type === 'image'"
+                :src="clip.video_preview_url"
+                :alt="clip.visual_description"
+                class="preview-video"
+              />
               <video
+                v-else
                 :src="clip.video_preview_url"
                 muted
                 loop
@@ -256,8 +263,10 @@ async function handleConfirm() {
               <el-tag v-for="kw in clip.keywords" :key="kw" size="small" type="info">{{ kw }}</el-tag>
             </div>
 
-            <div v-if="clip.author" class="clip-author">
-              by {{ clip.author }}
+            <div v-if="clip.author || clip.provider" class="clip-author">
+              <template v-if="clip.author">by {{ clip.author }}</template>
+              <template v-if="clip.provider">{{ clip.author ? ' · ' : '' }}{{ clip.provider }}</template>
+              <template v-if="clip.media_type === 'image'"> · still image</template>
             </div>
           </div>
 

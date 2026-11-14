@@ -34,13 +34,43 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tts", tags=["tts"])
 
+# Handlers in this module are plain ``def`` on purpose: they call ffmpeg,
+# provider HTTP APIs and the DB synchronously, so FastAPI runs them in its
+# threadpool instead of blocking the event loop.
+
+MAX_VOICE_UPLOAD_BYTES = 50 * 1024 * 1024
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+def _copy_upload_capped(src, dst, max_bytes: int = MAX_VOICE_UPLOAD_BYTES) -> int:
+    """Copy file-like ``src`` to ``dst`` in chunks; 413 as soon as it exceeds ``max_bytes``."""
+    total = 0
+    while True:
+        chunk = src.read(_UPLOAD_CHUNK_BYTES)
+        if not chunk:
+            return total
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=413, detail="Audio file too large (max 50MB)")
+        dst.write(chunk)
+
+
+def _parse_ffprobe_duration(returncode: int, stdout: str) -> float:
+    """Parse ffprobe's duration output; 400 if it is missing, ``N/A`` or not a number."""
+    try:
+        if returncode != 0:
+            raise ValueError("ffprobe failed")
+        return float((stdout or "").strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Could not read audio duration")
+
 
 # ---------------------------------------------------------------------------
 # GET /api/tts/catalog — aggregated voice catalog from all enabled providers
 # ---------------------------------------------------------------------------
 
 @router.get("/catalog", response_model=VoiceCatalogResponse)
-async def get_voice_catalog(user: User = Depends(get_current_user)):
+def get_voice_catalog(user: User = Depends(get_current_user)):
     """Return the full voice catalog for the current user."""
     from app.tts import get_tts_registry
 
@@ -77,7 +107,7 @@ async def get_voice_catalog(user: User = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 
 @router.get("/preview")
-async def get_voice_preview(
+def get_voice_preview(
     voice_key: str,
     user: User = Depends(get_current_user_from_header_or_token),
 ):
@@ -162,7 +192,7 @@ def update_session_tts_handler(session_id: str, request: UpdateTTSRequest, user:
 # ---------------------------------------------------------------------------
 
 @router.get("/fish/voices", response_model=FishVoiceListResponse)
-async def list_fish_voices(
+def list_fish_voices(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -179,7 +209,7 @@ async def list_fish_voices(
 
 
 @router.post("/fish/voices", response_model=FishVoiceResponse, status_code=201)
-async def create_fish_voice(
+def create_fish_voice(
     title: str = Form(...),
     transcript: str = Form(default=""),
     audio_file: UploadFile = File(...),
@@ -196,32 +226,31 @@ async def create_fish_voice(
     if not audio_file.content_type or not audio_file.content_type.startswith("audio/"):
         raise HTTPException(status_code=400, detail="File must be an audio file")
 
-    # Read and validate size (max 50MB)
-    content = await audio_file.read()
-    if len(content) > 50 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Audio file too large (max 50MB)")
+    # Fast reject when the size is already known (max 50MB)
+    known_size = getattr(audio_file, "size", None)
+    if known_size is not None and known_size > MAX_VOICE_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Audio file too large (max 50MB)")
 
-    # Save to temp file
+    # Copy to a temp file in chunks, aborting once over the cap
     suffix = Path(audio_file.filename).suffix if audio_file.filename else ".wav"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(content)
         tmp_path = Path(tmp.name)
 
     try:
-        # Validate duration (10-30 seconds)
-        import subprocess
+        with open(tmp_path, "wb") as dst:
+            _copy_upload_capped(audio_file.file, dst)
 
+        # Validate duration (10-30 seconds)
         result = subprocess.run(
             [settings.ffprobe_path, "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(tmp_path)],
             capture_output=True, text=True,
         )
-        if result.returncode == 0:
-            duration = float(result.stdout.strip())
-            if duration < 10:
-                raise HTTPException(status_code=400, detail="Audio must be at least 10 seconds long")
-            if duration > 30:
-                raise HTTPException(status_code=400, detail="Audio must be 30 seconds or shorter")
+        duration = _parse_ffprobe_duration(result.returncode, result.stdout)
+        if duration < 10:
+            raise HTTPException(status_code=400, detail="Audio must be at least 10 seconds long")
+        if duration > 30:
+            raise HTTPException(status_code=400, detail="Audio must be 30 seconds or shorter")
 
         # Normalize audio for best clone quality (mono, 44.1kHz)
         normalized_path = tmp_path.parent / f"normalized_{tmp_path.name}"
@@ -273,7 +302,7 @@ async def create_fish_voice(
 
 
 @router.get("/fish/voices/{voice_id}", response_model=FishVoiceResponse)
-async def get_fish_voice(
+def get_fish_voice(
     voice_id: int,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -301,7 +330,7 @@ async def get_fish_voice(
 
 
 @router.delete("/fish/voices/{voice_id}", status_code=204)
-async def delete_fish_voice(
+def delete_fish_voice(
     voice_id: int,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),

@@ -90,6 +90,10 @@ class VideoSession:
     credits_path: Optional[str] = None
     error_message: Optional[str] = None
 
+    # Timing: epoch seconds when clip generation last started (used by the
+    # stale-session sweeper instead of created_at)
+    clips_started_at: Optional[float] = None
+
 
 class SessionStore:
     """Redis-based session storage."""
@@ -257,11 +261,11 @@ class SessionStore:
         sessions.sort(key=lambda s: s.created_at, reverse=True)
         return sessions[:limit]
 
-    def list_all(self, limit: int = 100) -> List[VideoSession]:
+    def list_all(self, limit: Optional[int] = 100) -> List[VideoSession]:
         """List all sessions using SCAN (non-blocking). Internal/admin use only.
 
         Args:
-            limit: Maximum sessions to return
+            limit: Maximum sessions to return (None = no limit)
 
         Returns:
             List of sessions
@@ -274,7 +278,7 @@ class SessionStore:
                 data = self.redis.get(key)
                 if data:
                     sessions.append(self._deserialize(data))
-                if len(sessions) >= limit:
+                if limit is not None and len(sessions) >= limit:
                     return sorted(sessions, key=lambda s: s.created_at, reverse=True)
             if cursor == 0:
                 break
@@ -292,7 +296,9 @@ class SessionStore:
     def _deserialize(self, data: str) -> VideoSession:
         """Deserialize session from JSON."""
         d = json.loads(data)
-        return VideoSession(**d)
+        # Ignore unknown keys so sessions written by a newer/older build still load
+        known = VideoSession.__dataclass_fields__
+        return VideoSession(**{k: v for k, v in d.items() if k in known})
 
 
 # Global session store instance

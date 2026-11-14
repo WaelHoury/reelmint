@@ -76,16 +76,10 @@ class VideoService:
             return session
 
         # Generate script from prompt using LLM
-        from app.core import ScenePlanner
+        from scene_planner import create_planner
 
         style = session.narration_style or settings.narration_style
-        planner = ScenePlanner(
-            provider=settings.llm_provider,
-            model=settings.ollama_model if settings.llm_provider == "ollama" else settings.openrouter_model,
-            base_url=settings.ollama_base_url if settings.llm_provider == "ollama" else settings.openrouter_base_url,
-            api_key=settings.openrouter_api_key if settings.llm_provider == "openrouter" else None,
-            narration_style=style,
-        )
+        planner = create_planner(narration_style=style, provider=settings.llm_provider)
 
         duration_minutes = session.duration_seconds / 60
         wps = get_words_per_second(provider=session.tts_provider)
@@ -153,6 +147,7 @@ class VideoService:
 
         session.status = "clips_generating"
         session.clips = []  # will be populated progressively
+        session.clips_started_at = time.time()
         session_store.update(session)
 
         # Run in background thread (I/O-bound, no heavy CPU)
@@ -201,12 +196,12 @@ class VideoService:
         )
 
         pixabay_searcher = None
-        if settings.enable_pixabay and settings.pixabay_api_key:
-            from app.media.pixabay_search import CachedPixabaySearcher
+        if (settings.enable_pixabay or settings.enable_image_fallback) and settings.pixabay_api_key:
+            from app.media.pixabay_search import CachedPixabaySearcher, PIXABAY_CACHE_TTL
             pixabay_searcher = CachedPixabaySearcher(
                 api_key=settings.pixabay_api_key,
                 redis_client=redis_client,
-                cache_ttl=settings.clip_search_cache_ttl,
+                cache_ttl=getattr(settings, 'pixabay_cache_ttl', PIXABAY_CACHE_TTL),
             )
 
         searcher = MultiSourceSearcher(
@@ -217,20 +212,27 @@ class VideoService:
         )
         videos = searcher.search(keywords, max_results=5, orientation=session.orientation)
 
-        video_info = videos[0] if videos else None
+        media_info = videos[0] if videos else None
 
+        # Same still-image fallback as initial clip generation
+        if not media_info and settings.enable_image_fallback:
+            images = searcher.search_images(keywords, max_results=3, orientation=session.orientation)
+            media_info = images[0] if images else None
+
+        media_type = getattr(media_info, 'media_type', 'video') if media_info else None
         session.clips[clip_index] = {
             'index': clip_index,
             'keywords': keywords,
             'visual_description': visual_description,
-            'video_preview_url': video_info.preview_url if video_info else None,
-            'video_id': str(video_info.id) if video_info else None,
-            'author': video_info.author if video_info else None,
-            'author_url': video_info.url if video_info else None,
-            'duration_seconds': video_info.duration if video_info else None,
-            'search_status': 'ready' if video_info else 'failed',
-            'media_type': 'video' if video_info else None,
-            'provider': video_info.provider if video_info else None,
+            'video_preview_url': media_info.preview_url if media_info else None,
+            'video_id': str(media_info.id) if media_info else None,
+            'author': media_info.author if media_info else None,
+            'author_url': media_info.url if media_info else None,
+            'duration_seconds': (media_info.duration or None) if media_info and media_type != 'image' else None,
+            'search_status': 'ready' if media_info else 'failed',
+            'search_error': None if media_info else 'No matching videos found',
+            'media_type': media_type,
+            'provider': getattr(media_info, 'provider', 'Pexels') if media_info else None,
         }
 
         session_store.update(session)
@@ -288,15 +290,35 @@ class VideoService:
                     "Please wait for it to finish before starting another."
                 )
 
+        previous_status = session.status
         session.status = "generating"
         session_store.update(session)
 
-        # Queue the job
-        job = self.queue.enqueue(
-            'app.api.services.video_service.generate_video_task',
-            session.session_id,
-            job_timeout='45m',
-        )
+        # Queue the job. If enqueue fails (e.g. Redis down), undo the status
+        # change and release the locks so the user is not locked out.
+        try:
+            job = self.queue.enqueue(
+                'app.api.services.video_service.generate_video_task',
+                session.session_id,
+                job_timeout='45m',
+            )
+        except Exception:
+            logger.exception("Failed to enqueue video generation for session %s", session.session_id)
+            session.status = previous_status
+            try:
+                session_store.update(session)
+            except Exception:
+                logger.exception("Failed to roll back status for session %s", session.session_id)
+            if not is_superuser and session.user_id:
+                try:
+                    self._release_user_generation_lock(session.user_id, session.session_id)
+                except Exception:
+                    logger.exception("Failed to release user lock for session %s", session.session_id)
+            try:
+                self.redis.delete(f"{self.SESSION_ENQUEUE_LOCK_PREFIX}{session.session_id}")
+            except Exception:
+                pass
+            raise
 
         session.job_id = job.id
         session_store.update(session)
@@ -328,14 +350,21 @@ class VideoService:
             Job status dict with mapped status values
         """
         if not session.job_id:
-            # No job enqueued yet — only return "processing"/"queued" if session
-            # is actually in a generating state; otherwise return the raw status
-            # so the frontend knows it still needs to POST /generate.
-            if session.status == "generating":
-                return {'status': 'processing', 'job_id': None}
+            # No job enqueued yet. JobStatusResponse only allows
+            # queued|processing|completed|failed, so map the session status.
+            # Pre-generation statuses (draft, script_ready, clips_ready, ...)
+            # map to "queued" with job_id=None: the frontend only resumes
+            # polling when a job_id is present, otherwise it POSTs /generate.
+            no_job_mapping = {
+                "generating": "processing",
+                "completed": "completed",
+                "failed": "failed",
+            }
+            mapped = no_job_mapping.get(session.status, "queued")
             return {
-                'status': session.status,
+                'status': mapped,
                 'job_id': None,
+                'error_message': session.error_message if mapped == 'failed' else None,
             }
 
         from rq.job import Job
@@ -386,19 +415,13 @@ def generate_clips_task(session_id: str):
 
         t_total = time.time()
 
-        from app.core import ScenePlanner
+        from scene_planner import create_planner
         from video_searcher import CachedVideoSearcher
         from app.media.multi_source_searcher import MultiSourceSearcher
 
         # --- Stage 1: LLM clip descriptions ---
         t_llm = time.time()
-        planner = ScenePlanner(
-            provider=settings.llm_provider,
-            model=settings.ollama_model if settings.llm_provider == "ollama" else settings.openrouter_model,
-            base_url=settings.ollama_base_url if settings.llm_provider == "ollama" else settings.openrouter_base_url,
-            api_key=settings.openrouter_api_key if settings.llm_provider == "openrouter" else None,
-            narration_style=settings.narration_style,
-        )
+        planner = create_planner(narration_style=settings.narration_style, provider=settings.llm_provider)
         duration_minutes = session.duration_seconds / 60
         plan = planner.generate_clips_from_script(session.script_text, duration_minutes)
         llm_elapsed = time.time() - t_llm
@@ -432,12 +455,12 @@ def generate_clips_task(session_id: str):
         )
 
         pixabay_searcher = None
-        if settings.enable_pixabay and settings.pixabay_api_key:
-            from app.media.pixabay_search import CachedPixabaySearcher
+        if (settings.enable_pixabay or settings.enable_image_fallback) and settings.pixabay_api_key:
+            from app.media.pixabay_search import CachedPixabaySearcher, PIXABAY_CACHE_TTL
             pixabay_searcher = CachedPixabaySearcher(
                 api_key=settings.pixabay_api_key,
                 redis_client=redis_client,
-                cache_ttl=settings.clip_search_cache_ttl,
+                cache_ttl=getattr(settings, 'pixabay_cache_ttl', PIXABAY_CACHE_TTL),
             )
 
         searcher = MultiSourceSearcher(
@@ -485,7 +508,7 @@ def generate_clips_task(session_id: str):
                             'search_status': 'ready',
                             'search_error': None,
                             'media_type': 'image',
-                            'provider': 'Pixabay',
+                            'provider': getattr(image_info, 'provider', 'Pixabay'),
                         }
 
                 return idx, {
@@ -500,7 +523,7 @@ def generate_clips_task(session_id: str):
                     'search_status': 'ready' if video_info else 'failed',
                     'search_error': None if video_info else 'No matching videos found',
                     'media_type': 'video' if video_info else None,
-                    'provider': video_info.provider if video_info else None,
+                    'provider': getattr(video_info, 'provider', 'Pexels') if video_info else None,
                 }
             except Exception as e:
                 logger.warning("Clip %d search failed: %s", idx, e)
@@ -537,7 +560,7 @@ def generate_clips_task(session_id: str):
         session.status = "clips_ready"
         session_store.update(session)
 
-        stats = searcher.cache_stats
+        stats = getattr(searcher, 'cache_stats', None) or {'hits': 0, 'misses': 0, 'hit_rate': 0.0}
         logger.info(
             "Session %s clip generation complete: %.1fs total (LLM: %.1fs, search: %.1fs), "
             "%d clips, cache hit rate: %.0f%% (%d hits, %d misses)",

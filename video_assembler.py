@@ -10,6 +10,7 @@ from typing import List, Tuple
 import os
 
 from app.core.config import settings
+from utils import escape_concat_path
 
 # Resolution mapping for video orientations
 ORIENTATION_RESOLUTION = {
@@ -17,6 +18,9 @@ ORIENTATION_RESOLUTION = {
     'portrait': (1080, 1920),
     'square': (1080, 1080),
 }
+
+
+KEN_BURNS_EFFECTS = ['zoom_in', 'zoom_out', 'pan_right']
 
 
 def get_resolution(orientation: str) -> Tuple[int, int]:
@@ -214,6 +218,10 @@ class VideoAssembler:
         ]
         if color_grade_filter:
             vf_parts.append(color_grade_filter)
+        # Safety: if the source is shorter than duration_sec (after -ss), clone
+        # the last frame so the output is always exactly duration_sec long
+        # (-t below trims the excess). Otherwise mux -shortest cuts narration.
+        vf_parts.append(f'tpad=stop_mode=clone:stop_duration={duration_sec}')
 
         vf_string = ','.join(vf_parts)
 
@@ -229,6 +237,79 @@ class VideoAssembler:
             '-preset', settings.ffmpeg_intermediate_preset,
             '-crf', str(settings.ffmpeg_intermediate_crf),
             '-threads', '1',
+            '-an',
+            '-y',
+            str(output_path)
+        ]
+
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
+        return output_path
+
+    def image_to_video(self, image_path: Path, output_path: Path,
+                       duration_sec: float, orientation: str = 'landscape',
+                       effect: str = 'zoom_in',
+                       color_grade_filter: str = None) -> Path:
+        """Convert a still image to a video clip using Ken Burns effect.
+
+        Uses FFmpeg zoompan filter for slow zoom/pan animation.
+        Output format matches process_clip() for seamless concatenation.
+
+        Args:
+            image_path: Path to source image (JPG/PNG)
+            output_path: Path for output video clip
+            duration_sec: Desired clip duration in seconds
+            orientation: Video orientation for target resolution
+            effect: One of 'zoom_in', 'zoom_out', 'pan_right'
+            color_grade_filter: Optional FFmpeg filter for color grading
+
+        Returns:
+            Path to generated video clip
+        """
+        image_path = Path(image_path)
+        output_path = Path(output_path)
+
+        w, h = get_resolution(orientation)
+        fps = 30
+        total_frames = int(duration_sec * fps)
+
+        if effect == 'zoom_in':
+            zp = (f"zoompan=z='1+0.2*on/{total_frames}'"
+                  f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                  f":d={total_frames}:s={w}x{h}:fps={fps}")
+        elif effect == 'zoom_out':
+            zp = (f"zoompan=z='1.2-0.2*on/{total_frames}'"
+                  f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                  f":d={total_frames}:s={w}x{h}:fps={fps}")
+        elif effect == 'pan_right':
+            zp = (f"zoompan=z='1.1'"
+                  f":x='0.1*iw*on/{total_frames}':y='ih/2-(ih/zoom/2)'"
+                  f":d={total_frames}:s={w}x{h}:fps={fps}")
+        else:
+            zp = (f"zoompan=z='1'"
+                  f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                  f":d={total_frames}:s={w}x{h}:fps={fps}")
+
+        # Fill the frame at 2x resolution first: zoompan stretches the source
+        # when its aspect ratio differs, and oversampling smooths the motion.
+        prescale = (f"scale={w * 2}:{h * 2}:force_original_aspect_ratio=increase,"
+                    f"crop={w * 2}:{h * 2}")
+        vf_parts = [prescale, zp]
+        if color_grade_filter:
+            vf_parts.append(color_grade_filter)
+        vf_string = ','.join(vf_parts)
+
+        cmd = [
+            self.ffmpeg,
+            '-loop', '1',
+            '-i', str(image_path),
+            '-vf', vf_string,
+            '-t', str(duration_sec),
+            '-r', str(fps),
+            '-pix_fmt', 'yuv420p',
+            '-c:v', 'libx264',
+            '-preset', settings.ffmpeg_intermediate_preset,
+            '-crf', str(settings.ffmpeg_intermediate_crf),
+            '-threads', str(settings.ffmpeg_threads),
             '-an',
             '-y',
             str(output_path)
@@ -265,9 +346,8 @@ class VideoAssembler:
         with open(concat_file, 'w', encoding='utf-8') as f:
             for video_path in video_list:
                 abs_path = Path(video_path).resolve()
-                # Use forward slashes even on Windows for FFmpeg compatibility
-                path_str = str(abs_path).replace('\\', '/')
-                f.write(f"file '{path_str}'\n")
+                # Forward slashes + quote escaping (paths may contain ')
+                f.write(f"file {escape_concat_path(abs_path)}\n")
 
         cmd = [
             self.ffmpeg,
@@ -348,9 +428,8 @@ class VideoAssembler:
         with open(concat_file, 'w', encoding='utf-8') as f:
             for audio_path in audio_list:
                 abs_path = Path(audio_path).resolve()
-                # Use forward slashes even on Windows for FFmpeg compatibility
-                path_str = str(abs_path).replace('\\', '/')
-                f.write(f"file '{path_str}'\n")
+                # Forward slashes + quote escaping (paths may contain ')
+                f.write(f"file {escape_concat_path(abs_path)}\n")
 
         cmd = [
             self.ffmpeg,

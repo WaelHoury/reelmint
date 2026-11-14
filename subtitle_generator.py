@@ -17,6 +17,23 @@ def _get_resolution(orientation: str) -> Tuple[int, int]:
     return ORIENTATION_RESOLUTION.get(orientation, (1920, 1080))
 
 
+def escape_ass_text(text: str) -> str:
+    """Escape user text for an ASS Dialogue line.
+
+    '{' / '}' would start/end an override block (text inside is swallowed) and
+    a backslash could form an escape like \\N or \\h. Backslashes are replaced
+    by a look-alike (ASS has no literal-backslash escape), braces are
+    backslash-escaped (libass renders \\{ and \\} literally), and newlines
+    become spaces so a single Dialogue line is never broken.
+    Apply only to narration text, never to generated override tags.
+    """
+    if text is None:
+        return ''
+    text = str(text).replace('\\', '\u29f5')  # reverse solidus operator
+    text = text.replace('{', '\\{').replace('}', '\\}')
+    return re.sub(r'[\r\n]+', ' ', text)
+
+
 class SubtitleStyle:
     """Modern subtitle styling presets with orientation-based sizing."""
 
@@ -316,7 +333,8 @@ class SubtitleGenerator:
                 text = scene['narration']
 
                 # Split long text into multiple lines for better readability
-                text = self._split_subtitle_text(text, max_chars_per_line=40)
+                # (escape per-word so the inserted \\N breaks stay intact)
+                text = self._split_subtitle_text(text, max_chars_per_line=40, escape=True)
 
                 f.write(f"Dialogue: 0,{self._format_ass_time(start_time)},{self._format_ass_time(end_time)},"
                        f"Default,,0,0,0,,{text}\n")
@@ -355,7 +373,8 @@ class SubtitleGenerator:
 
         return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
-    def _split_subtitle_text(self, text: str, max_chars_per_line: int = 40) -> str:
+    def _split_subtitle_text(self, text: str, max_chars_per_line: int = 40,
+                             escape: bool = False) -> str:
         """Split long subtitle text into multiple lines.
 
         Args:
@@ -383,6 +402,9 @@ class SubtitleGenerator:
 
         if current_line:
             lines.append(' '.join(current_line))
+
+        if escape:
+            lines = [escape_ass_text(line) for line in lines]
 
         # Use \\N for ASS line breaks
         return '\\N'.join(lines)
@@ -649,7 +671,7 @@ class SubtitleGenerator:
                     for line_indices in line_layout:
                         parts = []
                         for idx in line_indices:
-                            w = group[idx]['word']
+                            w = escape_ass_text(group[idx]['word'])
                             if idx == highlight_idx:
                                 parts.append(f"{{\\c{highlight_color}}}{w}{{\\c{primary_color}}}")
                             else:
@@ -740,7 +762,7 @@ class SubtitleGenerator:
                     group_end = groups[group_idx + 1][0]['start']
 
                 # Build text from all words in the group
-                text = ' '.join(wt['word'] for wt in group)
+                text = escape_ass_text(' '.join(wt['word'] for wt in group))
 
                 f.write(f"Dialogue: 0,"
                        f"{self._format_ass_time(group_start)},"
@@ -771,14 +793,15 @@ class SubtitleGenerator:
         subtitle_path = Path(subtitle_path)
         output_path = Path(output_path)
 
-        # Convert paths to absolute for FFmpeg
-        sub_path_str = str(subtitle_path.resolve()).replace('\\', '/')
-        sub_path_str = sub_path_str.replace(':', '\\:')  # Escape colons for FFmpeg
+        from utils import escape_ffmpeg_filter_path
+
+        # Absolute path, escaped for FFmpeg filter syntax (handles ' : , [ ] ;)
+        sub_path_str = escape_ffmpeg_filter_path(subtitle_path.resolve())
 
         cmd = [
             ffmpeg_path,
             '-i', str(video_path),
-            '-vf', f"ass='{sub_path_str}'",
+            '-vf', f"ass={sub_path_str}",
             '-c:a', 'copy',
             '-y',
             str(output_path)

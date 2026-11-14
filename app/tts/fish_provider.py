@@ -14,6 +14,9 @@ from .base import TTSProvider, TTSResult, VoiceCatalogEntry
 
 logger = logging.getLogger(__name__)
 
+# Seconds before a Fish preview-sample download is abandoned
+PREVIEW_DOWNLOAD_TIMEOUT_SEC = 30
+
 DEFAULT_FISH_VOICE_ID = "__default__"
 CURATED_FISH_VOICES = [
     {
@@ -255,7 +258,7 @@ class FishAudioProvider(TTSProvider):
 
         sample_path = output_dir / f"preview_source_{voice_id}.mp3"
         try:
-            with urlopen(sample_url) as response:
+            with urlopen(sample_url, timeout=PREVIEW_DOWNLOAD_TIMEOUT_SEC) as response:
                 sample_path.write_bytes(response.read())
             return sample_path
         except Exception as e:

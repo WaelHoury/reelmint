@@ -164,8 +164,8 @@ def install_piper():
     print(f"Executable: {piper_exe_abs}")
     print(f"Voice model: {model_path_abs}")
     print()
-    print("Run test_setup.py to verify the installation:")
-    print("  python test_setup.py")
+    print("Run scripts/check_setup.py to verify the installation:")
+    print("  python scripts/check_setup.py")
     print()
 
     return 0

@@ -15,7 +15,7 @@ from app.db.base import get_db
 from app.db.models import User, Video
 from app.api.deps import get_current_user, get_current_user_from_token_param, get_owned_session
 from app.api.services.session_store import session_store
-from app.api.services.editor_service import editor_service
+from app.api.services.editor_service import editor_service, video_edit_lock_key
 from app.utils.helpers import stream_file_response, project_lock
 from app.api.limiter import limiter
 from app.api.schemas.editor import (
@@ -34,11 +34,15 @@ router = APIRouter(tags=["editor"])
 
 
 @router.get("/sessions/{session_id}/editor-data", response_model=EditorDataResponse)
-async def get_session_editor_data(
+def get_session_editor_data(
     session_id: str,
     user: User = Depends(get_current_user),
 ):
-    """Load editor data for a session. Requires project files to be persisted."""
+    """Load editor data for a session. Requires project files to be persisted.
+
+    Sync handler on purpose: preview generation runs ffmpeg, so FastAPI runs
+    this in its threadpool instead of blocking the event loop.
+    """
     session = get_owned_session(session_id, user)
     if session.status != "completed":
         raise HTTPException(status_code=400, detail="Video must be completed before editing")
@@ -78,20 +82,20 @@ async def render_session_editor(
     """Render editor changes for a session."""
     session = get_owned_session(session_id, user)
 
-    project_dir = _resolve_project_dir_from_session(session)
-    if not project_dir:
-        raise HTTPException(status_code=400, detail="Project data not available for this video")
-
-    project = editor_service.load_project(project_dir)
-    output_path = Path(session.output_path) if session.output_path else None
-    if not output_path:
-        raise HTTPException(status_code=400, detail="No output path for this session")
-
-    # Use project dir name as lock key to prevent concurrent file mutations
-    lock_id = project_dir.name
-
     def _render_with_lock():
-        with project_lock(lock_id):
+        # Everything here (DB/R2 lookups, file IO, ffmpeg) is blocking, so it
+        # runs in the executor rather than on the event loop.
+        project_dir = _resolve_project_dir_from_session(session)
+        if not project_dir:
+            raise HTTPException(status_code=400, detail="Project data not available for this video")
+
+        project = editor_service.load_project(project_dir)
+        output_path = Path(session.output_path) if session.output_path else None
+        if not output_path:
+            raise HTTPException(status_code=400, detail="No output path for this session")
+
+        # Same key as subtitle regeneration (routes/videos.py): both rewrite this mp4.
+        with project_lock(video_edit_lock_key(output_path)):
             render_type = editor_service.render_changes(
                 project_dir, project,
                 subtitles=render_request.subtitles.model_dump() if render_request.subtitles else None,
@@ -120,7 +124,7 @@ async def render_session_editor(
 
 
 @router.get("/sessions/{session_id}/editor/preview-stream")
-async def stream_session_preview(
+def stream_session_preview(
     session_id: str,
     request: Request,
     user: User = Depends(get_current_user_from_token_param),
@@ -151,7 +155,7 @@ async def stream_session_preview(
 
 
 @router.get("/videos/{video_id}/editor-data", response_model=EditorDataResponse)
-async def get_library_editor_data(
+def get_library_editor_data(
     video_id: int,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -193,23 +197,24 @@ async def render_library_editor(
     db: Session = Depends(get_db),
 ):
     """Render editor changes for a library video."""
-    video = db.query(Video).filter(Video.id == video_id, Video.user_id == user.id).first()
-    if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    project_dir = _resolve_project_dir_from_video(video)
-    if not project_dir:
-        raise HTTPException(status_code=400, detail="Project data not available for this video")
-
-    project = editor_service.load_project(project_dir)
-    output_path = Path(settings.output_dir) / video.output_filename
-
-    # Use project dir name as lock key to prevent concurrent file mutations
-    lock_id = project_dir.name
-    user_id = video.user_id
 
     def _render_with_lock():
-        with project_lock(lock_id):
+        # Everything here (DB/R2 lookups, file IO, ffmpeg) is blocking, so it
+        # runs in the executor rather than on the event loop.
+        video = db.query(Video).filter(Video.id == video_id, Video.user_id == user.id).first()
+        if not video:
+            raise HTTPException(status_code=404, detail="Video not found")
+
+        project_dir = _resolve_project_dir_from_video(video)
+        if not project_dir:
+            raise HTTPException(status_code=400, detail="Project data not available for this video")
+
+        project = editor_service.load_project(project_dir)
+        output_path = Path(settings.output_dir) / video.output_filename
+        user_id = video.user_id
+
+        # Same key as subtitle regeneration (routes/videos.py): both rewrite this mp4.
+        with project_lock(video_edit_lock_key(output_path)):
             render_type = editor_service.render_changes(
                 project_dir, project,
                 subtitles=render_request.subtitles.model_dump() if render_request.subtitles else None,
@@ -238,7 +243,7 @@ async def render_library_editor(
 
 
 @router.get("/videos/{video_id}/editor/preview-stream")
-async def stream_video_preview(
+def stream_video_preview(
     video_id: int,
     request: Request,
     user: User = Depends(get_current_user_from_token_param),
@@ -273,7 +278,7 @@ async def stream_video_preview(
 
 
 @router.post("/editor/search-clips", response_model=List[ClipSearchResult])
-async def search_replacement_clips(
+def search_replacement_clips(
     request: ClipSearchRequest,
     user: User = Depends(get_current_user),
 ):

@@ -41,7 +41,10 @@ Waiting for jobs...
     redis_conn = Redis.from_url(settings.redis_url)
     publish_queue = Queue('video_publish', connection=redis_conn)
     worker = Worker([publish_queue], connection=redis_conn)
-    worker.work()
+    # with_scheduler=True is required for delayed retries: publish_worker_task
+    # re-enqueues transient failures with queue.enqueue_in(), which only runs
+    # if an RQ scheduler is active.
+    worker.work(with_scheduler=True)
 
 
 if __name__ == "__main__":

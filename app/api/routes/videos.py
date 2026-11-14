@@ -16,6 +16,7 @@ from typing import Optional
 from app.api.schemas import JobStatusResponse, VideoDownloadResponse
 from app.api.services.session_store import session_store
 from app.api.services.video_service import video_service, regenerate_subtitles
+from app.api.services.editor_service import video_edit_lock_key
 from app.api.deps import get_current_user, get_current_user_from_token_param, get_owned_session, is_superuser
 from app.db.models import User
 from app.utils.helpers import stream_file_response, project_lock
@@ -254,8 +255,11 @@ async def update_video_subtitles(request: Request, session_id: str, sub_request:
             detail=f"Video must be completed first. Status: {session.status}"
         )
 
+    # Same key as the editor render (routes/editor.py): both rewrite the output mp4.
+    lock_key = video_edit_lock_key(session.output_path) if session.output_path else f"session:{session_id}"
+
     def _regen_with_lock():
-        with project_lock(session_id):
+        with project_lock(lock_key):
             regenerate_subtitles(session, sub_request.model_dump(exclude_none=True))
             # Re-upload updated video to R2 if enabled
             from app.core.config import settings as _settings

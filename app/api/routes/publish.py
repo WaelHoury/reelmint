@@ -1,9 +1,10 @@
 """Social publishing routes — OAuth, account management, and publish jobs."""
 
 import logging
-from urllib.parse import urlencode
+import secrets
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -16,8 +17,9 @@ from app.api.schemas.publish import (
     PublishJobResponse,
     StartOAuthRequest,
     StartOAuthResponse,
+    build_frontend_redirect,
 )
-from app.api.services.publish_service import publish_service, PublishServiceError
+from app.api.services.publish_service import OAUTH_STATE_TTL, publish_service, PublishServiceError
 from app.core.config import settings
 from app.db.base import get_db
 from app.db.models import User
@@ -67,16 +69,48 @@ def list_accounts(user: User = Depends(get_current_user), db: Session = Depends(
     )
 
 
+# Browser-binding cookie for the OAuth flow. Set on the /start response (the
+# frontend calls it through the same host, e.g. the Vite /api proxy) and sent
+# back by the browser on the provider's top-level GET redirect to the callback
+# (SameSite=Lax allows that). Cookies are not port-scoped, so a frontend on
+# localhost:3000 and a callback on localhost:8000 share it.
+OAUTH_NONCE_COOKIE = "publish_oauth_nonce"
+OAUTH_COOKIE_PATH = "/api/publish/oauth"
+
+
+def _frontend_origin() -> str:
+    origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+    return origins[0] if origins else "http://localhost:3000"
+
+
+def _redirect(return_to: str, params: dict) -> RedirectResponse:
+    response = RedirectResponse(url=build_frontend_redirect(_frontend_origin(), return_to, params))
+    # The nonce is single-use: clear it whatever the outcome.
+    response.delete_cookie(OAUTH_NONCE_COOKIE, path=OAUTH_COOKIE_PATH)
+    return response
+
+
 @router.post("/oauth/{provider}/start", response_model=StartOAuthResponse)
 def start_oauth(
     provider: str,
     body: StartOAuthRequest,
+    response: Response,
     user: User = Depends(get_current_user),
 ):
+    nonce = secrets.token_urlsafe(32)
     try:
-        auth_url = publish_service.start_oauth(user.id, provider, body.return_to)
+        auth_url = publish_service.start_oauth(user.id, provider, body.return_to, browser_nonce=nonce)
     except PublishServiceError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    response.set_cookie(
+        OAUTH_NONCE_COOKIE,
+        nonce,
+        max_age=OAUTH_STATE_TTL,
+        path=OAUTH_COOKIE_PATH,
+        httponly=True,
+        samesite="lax",
+        secure=settings.youtube_redirect_uri.startswith("https://"),
+    )
     return StartOAuthResponse(auth_url=auth_url)
 
 
@@ -86,37 +120,31 @@ def oauth_callback(
     code: str = "",
     state: str = "",
     error: str = "",
+    oauth_nonce: Optional[str] = Cookie(default=None, alias=OAUTH_NONCE_COOKIE),
     db: Session = Depends(get_db),
 ):
     """Handle OAuth callback redirect from the provider.
 
-    This endpoint is NOT JWT-authenticated — the browser hits it directly
-    from the OAuth provider redirect. Security relies on the cryptographic
-    state token stored in Redis.
+    This endpoint is not user-authenticated — the browser hits it directly
+    from the OAuth provider redirect. Security relies on the single-use,
+    short-lived state token stored in Redis, which must match the HttpOnly
+    nonce cookie set on this browser when the flow was started.
     """
-    # Determine frontend origin for redirect
-    origins = settings.cors_origins.split(",")
-    frontend_origin = origins[0].strip() if origins else "http://localhost:3000"
-
     if error:
-        params = urlencode({"oauth": "error", "provider": provider, "message": error})
-        return RedirectResponse(url=f"{frontend_origin}/account?{params}")
+        return _redirect("/account", {"oauth": "error", "provider": provider, "message": error})
 
     if not code or not state:
-        params = urlencode({"oauth": "error", "provider": provider, "message": "Missing code or state"})
-        return RedirectResponse(url=f"{frontend_origin}/account?{params}")
+        return _redirect("/account", {"oauth": "error", "provider": provider, "message": "Missing code or state"})
 
     try:
-        # Peek at return_to before consuming state
-        return_to = publish_service.get_return_to(state)
-        account = publish_service.handle_oauth_callback(provider, code, state, db)
+        account, return_to = publish_service.handle_oauth_callback(
+            provider, code, state, db, browser_nonce=oauth_nonce
+        )
         logger.info("OAuth callback success: user connected %s account '%s'", provider, account.display_name)
-        params = urlencode({"oauth": "success", "provider": provider})
-        return RedirectResponse(url=f"{frontend_origin}{return_to}?{params}")
+        return _redirect(return_to, {"oauth": "success", "provider": provider})
     except PublishServiceError as e:
         logger.warning("OAuth callback error: %s", e)
-        params = urlencode({"oauth": "error", "provider": provider, "message": str(e)})
-        return RedirectResponse(url=f"{frontend_origin}/account?{params}")
+        return _redirect("/account", {"oauth": "error", "provider": provider, "message": str(e)})
 
 
 @router.delete("/accounts/{account_id}", status_code=204)

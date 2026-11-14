@@ -1,13 +1,13 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { currentUser, logout } from '../stores/auth'
+import { currentUser } from '../stores/auth'
 
 const props = defineProps({
   collapsed: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:collapsed', 'logout'])
+const emit = defineEmits(['update:collapsed'])
 
 const route = useRoute()
 const router = useRouter()
@@ -32,10 +32,6 @@ function navigate(path) {
 
 function toggleSidebar() {
   emit('update:collapsed', !props.collapsed)
-}
-
-function handleLogout() {
-  emit('logout')
 }
 </script>
 
@@ -84,13 +80,6 @@ function handleLogout() {
           <span v-show="!collapsed" class="user-name">{{ currentUser.name }}</span>
         </transition>
       </div>
-
-      <button class="nav-item logout-btn" @click="handleLogout" :title="collapsed ? 'Logout' : ''">
-        <el-icon :size="20"><SwitchButton /></el-icon>
-        <transition name="sidebar-text">
-          <span v-show="!collapsed" class="nav-label">Logout</span>
-        </transition>
-      </button>
     </div>
   </aside>
 </template>
@@ -243,15 +232,6 @@ function handleLogout() {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.logout-btn {
-  color: var(--ce-text-muted) !important;
-}
-
-.logout-btn:hover {
-  color: #f87171 !important;
-  background: rgba(248, 113, 113, 0.08) !important;
 }
 
 /* Sidebar text transition */

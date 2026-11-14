@@ -48,3 +48,11 @@ desktop.ini
 # Test files
 test_*.mp4
 test_*.wav
+
+# Per-video working data (clips, narration, project.json)
+projects/
+temp/
+
+# Frontend
+node_modules/
+frontend/dist/

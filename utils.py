@@ -1,9 +1,60 @@
 """Utility functions for video generation."""
 
+import re
 import subprocess
+import unicodedata
 from pathlib import Path
 from typing import Tuple
 import os
+
+
+# Characters that break filesystem paths, shell-ish contexts, or FFmpeg
+# filter/concat syntax (e.g. ass='.../subtitles.ass', file '...').
+_UNSAFE_FILENAME_CHARS = re.compile(r"""[<>:"'`|?*\\/\[\],;=%$!&{}#~^]""")
+
+
+def sanitize_filename(name: str, max_length: int = 100) -> str:
+    """Sanitize a string (e.g. a video title) for use in file/dir names.
+
+    Removes path separators, filesystem-illegal characters, control chars and
+    characters that break FFmpeg filter strings or concat lists
+    (quotes, brackets, commas, semicolons, colons, '=' and backslashes).
+    Whitespace is collapsed; the result stays human-readable.
+    Falls back to 'untitled' if nothing remains.
+    """
+    name = unicodedata.normalize("NFKC", str(name or ""))
+    # Typographic quotes behave like apostrophes for our purposes
+    name = re.sub(r"[\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u00b4]", "", name)
+    name = re.sub(r"\s+", " ", name)  # tabs/newlines -> space first
+    name = re.sub(r"[\x00-\x1f\x7f]", "", name)
+    name = _UNSAFE_FILENAME_CHARS.sub("", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    name = name.lstrip(".-").strip()
+    if len(name) > max_length:
+        name = name[:max_length].rstrip()
+    return name or "untitled"
+
+
+def escape_concat_path(path) -> str:
+    """Quote a path for an FFmpeg concat-demuxer list line: file '<path>'.
+
+    Inside single quotes the only special char is the quote itself, which is
+    written as '\\'' (close quote, escaped quote, reopen quote).
+    """
+    path_str = str(path).replace("\\", "/")
+    return "'" + path_str.replace("'", "'\\''") + "'"
+
+
+def escape_ffmpeg_filter_path(path) -> str:
+    """Escape a path for use as a filter option value in a -vf/-filter_complex
+    string, e.g. f"ass={escape_ffmpeg_filter_path(p)}" (no extra quotes).
+
+    Applies both FFmpeg escaping levels: the option-value level (\\ ' :) and
+    the filtergraph level (\\ ' [ ] , ;).
+    """
+    path_str = str(path).replace("\\", "/")
+    level1 = re.sub(r"([\\':])", r"\\\1", path_str)
+    return re.sub(r"([\\'\[\],;])", r"\\\1", level1)
 
 
 def get_media_duration(file_path: Path, ffprobe_path: str = "ffprobe") -> float:

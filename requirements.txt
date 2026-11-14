@@ -18,11 +18,16 @@ pillow
 # LLM Providers
 ollama
 openai  # Used for OpenRouter (OpenAI-compatible API)
+anthropic  # Claude via the Anthropic API (LLM_PROVIDER=anthropic)
 
 # TTS
 kokoro>=0.9.4
 soundfile
 fish-audio-sdk  # Fish Audio S2 TTS (optional — only needed if fish provider enabled)
+faster-whisper  # word-level timestamps for captions
+# Optional voice engines (install manually if you use them):
+#   chatterbox-tts   (TTS_ENGINE=chatterbox, needs CUDA)
+#   orpheus-cpp scipy  (TTS_ENGINE=orpheus)
 
 # Utilities
 python-dotenv
@@ -32,13 +37,9 @@ slowapi
 
 # Database
 alembic
-psycopg2-binary
-
-# Auth
-google-auth
-python-jose[cryptography]
+psycopg[binary]>=3.1
 
 # Social Publishing
-cryptography
+cryptography  # Fernet encryption of stored OAuth tokens
 google-api-python-client
 google-auth-httplib2

@@ -5,33 +5,7 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-// Set token from localStorage on init
-const savedToken = localStorage.getItem('auth_token')
-if (savedToken) {
-  api.defaults.headers.common['Authorization'] = `Bearer ${savedToken}`
-}
-
-// 401 interceptor — redirect to login
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('auth_token')
-      localStorage.removeItem('auth_user')
-      delete api.defaults.headers.common['Authorization']
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
-      }
-    }
-    return Promise.reject(error)
-  }
-)
-
-// === Auth ===
-
-export function googleLogin(idToken) {
-  return api.post('/auth/google', { id_token: idToken })
-}
+// === Local user ===
 
 export function getMe() {
   return api.get('/auth/me')
@@ -111,16 +85,12 @@ export function getJobStatus(sessionId) {
   return api.get(`/sessions/${sessionId}/status`)
 }
 
-function _getToken() {
-  return localStorage.getItem('auth_token') || ''
-}
-
 export function getVideoDownloadUrl(sessionId) {
-  return `/api/sessions/${sessionId}/video?token=${_getToken()}`
+  return `/api/sessions/${sessionId}/video`
 }
 
 export function getVideoStreamUrl(sessionId) {
-  return `/api/sessions/${sessionId}/video/stream?token=${_getToken()}`
+  return `/api/sessions/${sessionId}/video/stream`
 }
 
 // === Subtitles ===
@@ -140,15 +110,15 @@ export function deleteVideo(videoId) {
 }
 
 export function getLibraryStreamUrl(videoId) {
-  return `/api/videos/${videoId}/stream?token=${_getToken()}`
+  return `/api/videos/${videoId}/stream`
 }
 
 export function getLibraryDownloadUrl(videoId) {
-  return `/api/videos/${videoId}/download?token=${_getToken()}`
+  return `/api/videos/${videoId}/download`
 }
 
 export function getThumbnailUrl(videoId) {
-  return `/api/videos/${videoId}/thumbnail?token=${_getToken()}`
+  return `/api/videos/${videoId}/thumbnail`
 }
 
 // === TTS / Voices ===
@@ -158,7 +128,7 @@ export function getVoiceCatalog() {
 }
 
 export function getVoicePreviewUrl(voiceKey) {
-  return `/api/tts/preview?voice_key=${encodeURIComponent(voiceKey)}&token=${_getToken()}`
+  return `/api/tts/preview?voice_key=${encodeURIComponent(voiceKey)}`
 }
 
 export function getVoicePreview(voiceKey) {
@@ -213,11 +183,11 @@ export function searchReplacementClips(keywords, orientation = 'landscape', coun
 }
 
 export function getSessionPreviewStreamUrl(sessionId) {
-  return `/api/sessions/${sessionId}/editor/preview-stream?token=${_getToken()}`
+  return `/api/sessions/${sessionId}/editor/preview-stream`
 }
 
 export function getVideoPreviewStreamUrl(videoId) {
-  return `/api/videos/${videoId}/editor/preview-stream?token=${_getToken()}`
+  return `/api/videos/${videoId}/editor/preview-stream`
 }
 
 // === Social Publishing ===
