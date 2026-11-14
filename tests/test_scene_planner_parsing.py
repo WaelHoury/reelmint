@@ -162,3 +162,25 @@ def test_ollama_client_uses_base_url():
         assert p._call_ollama([{"role": "user", "content": "hi"}]) == "ok"
     fake.Client.assert_called_once_with(host="http://host.docker.internal:11434")
     fake.chat.assert_not_called()
+
+
+def test_clips_wrapped_under_another_key_are_found():
+    from scene_planner import extract_clips_list
+    clips = extract_clips_list({"visual_clips": [{"keywords": ["a", "b"], "visual_description": "x"}]})
+    assert clips[0]["keywords"] == ["a", "b"]
+
+
+def test_ollama_uses_json_mode_except_for_narration(monkeypatch):
+    from scene_planner import ScenePlanner
+    p = ScenePlanner(provider="ollama", model="m", base_url="http://localhost:11434")
+    calls = []
+
+    class FakeClient:
+        def chat(self, **kw):
+            calls.append(kw.get("format"))
+            return {"message": {"content": "{}"}}
+
+    p._ollama_client = FakeClient()
+    p._call_llm([{"role": "user", "content": "x"}], stage="clips")
+    p._call_llm([{"role": "user", "content": "x"}], stage="narration")
+    assert calls == ["json", None]

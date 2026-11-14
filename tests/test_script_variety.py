@@ -88,3 +88,23 @@ def test_overlong_narration_gets_trimmed(monkeypatch):
     out = planner.generate_narration("topic", 0.5, 2.5)  # 30 s * 2.5 = 75 words
     assert len(out.split()) <= int(75 * 1.1)
     assert out.endswith(".")
+
+
+def test_short_narration_is_retried_with_feedback_and_best_kept(monkeypatch):
+    planner = ScenePlanner(provider="ollama", model="m", base_url="http://localhost:11434")
+    drafts = iter([
+        " ".join(["Short draft sentence here."] * 10),   # 40 words, target 75
+        " ".join(["Longer draft sentence now ok."] * 11),  # 55 words, still under 60
+        " ".join(["Tiny draft."] * 20),                   # 40 words
+    ])
+    prompts = []
+
+    def fake_llm(messages, temperature=0.7, stage="x"):
+        prompts.append(messages[1]["content"])
+        return next(drafts)
+
+    monkeypatch.setattr(planner, "_call_llm", fake_llm)
+    out = planner.generate_narration("topic", 0.5, 2.5)   # 30 s * 2.5 = 75 words
+    assert len(prompts) == 3
+    assert "only 40 words" in prompts[1]
+    assert len(out.split()) == 55   # the longest draft is kept rather than failing

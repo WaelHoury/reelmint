@@ -52,6 +52,13 @@ def extract_clips_list(data) -> list:
         clips = data
     elif isinstance(data, dict) and isinstance(data.get('clips'), list):
         clips = data['clips']
+    elif isinstance(data, dict):
+        # JSON mode makes small models wrap the list under a key of their own
+        # choosing ("visual_clips", "shots", ...): take the first list of objects.
+        clips = next((v for v in data.values()
+                      if isinstance(v, list) and any(isinstance(c, dict) for c in v)), None)
+        if clips is None:
+            raise ValueError("LLM response has no 'clips' array")
     else:
         raise ValueError("LLM response has no 'clips' array")
     clips = [c for c in clips if isinstance(c, dict)]
@@ -489,7 +496,7 @@ Output ONLY valid JSON, no markdown or explanation."""
             import ollama
             self._ollama_client = ollama.Client(host=base_url)
 
-    def _call_ollama(self, messages: list, temperature: float = 0.7) -> str:
+    def _call_ollama(self, messages: list, temperature: float = 0.7, json_mode: bool = False) -> str:
         """Call Ollama API and return the response content.
 
         Args:
@@ -502,13 +509,19 @@ Output ONLY valid JSON, no markdown or explanation."""
         if self._ollama_client is None:
             import ollama
             self._ollama_client = ollama.Client(host=self.base_url)
+        kwargs = {}
+        if json_mode:
+            # Ollama's JSON mode constrains the output to valid JSON. Small local
+            # models (the default qwen2.5:3b) often emit broken JSON without it.
+            kwargs["format"] = "json"
         response = self._ollama_client.chat(
             model=self.model,
             messages=messages,
             options={
                 "temperature": temperature,
                 "num_predict": 4000,
-            }
+            },
+            **kwargs,
         )
         return response['message']['content']
 
@@ -571,7 +584,8 @@ Output ONLY valid JSON, no markdown or explanation."""
         if self._claude is not None:
             # Claude models choose their own sampling; temperature is not sent.
             return self._claude.chat(messages)
-        return self._call_ollama(messages, temperature)
+        # Every stage except free-text narration expects JSON back
+        return self._call_ollama(messages, temperature, json_mode=(stage != "narration"))
 
     def get_token_report(self) -> str:
         """Get formatted token usage report.
@@ -778,6 +792,8 @@ Output ONLY the narration text. No JSON, no formatting, no quotes around it."""
 Output ONLY the narration text."""
 
         print(f"  [Stage 1] Generating narration ({word_count} words)...")
+        base_user_prompt = user_prompt
+        best = None
 
         for attempt in range(max_retries):
             try:
@@ -808,9 +824,17 @@ Output ONLY the narration text."""
                 words = content.split()
                 print(f"    Generated {len(words)} words")
 
-                if len(words) < word_count * 0.5:
-                    print(f"    WARNING: Too short, retrying...")
-                    continue
+                if len(words) >= word_count * 0.5 and (best is None or len(words) > len(best.split())):
+                    best = content
+                if len(words) < word_count * 0.8:
+                    if attempt < max_retries - 1:
+                        # Small local models tend to write far too little; say so explicitly
+                        print(f"    WARNING: Too short ({len(words)}/{word_count} words), retrying...")
+                        user_prompt = (base_user_prompt + f"\n\nYour last draft had only {len(words)} words. "
+                                       f"Write about {word_count} words so the voiceover fills the whole video.")
+                        continue
+                    if best is not None:
+                        content = best
 
                 if has_banned_opener(content) and attempt < max_retries - 1:
                     print(f"    WARNING: Cliche opening, retrying...")
@@ -832,6 +856,9 @@ Output ONLY the narration text."""
                 print(f"    ERROR (attempt {attempt + 1}/{max_retries}): {e}")
                 continue
 
+        if best is not None:
+            print(f"    Using the longest draft ({len(best.split())} words)")
+            return best
         raise ValueError(f"Failed to generate narration after {max_retries} attempts")
 
     def _generate_clips_for_narration(self, prompt: str, narration: str,
@@ -1105,7 +1132,7 @@ Output ONLY the JSON array."""
         user_prompt = f"""VIDEO TOPIC & DIRECTION (follow this closely):
 {prompt}
 
-Write a {duration_minutes}-minute narration (~{word_count} words at 3 words/sec) that directly addresses the above topic.
+Write a {duration_minutes}-minute narration of about {word_count} words (never more than {int(word_count * 1.1)}) that directly addresses the above topic.
 Stay focused on what the user is asking — cover their specific points, questions, and angles.
 Include {num_clips} visual clips (~{clip_duration:.0f} seconds each).{loop_instruction}
 
@@ -1114,6 +1141,8 @@ Output ONLY the JSON, no other text."""
         angle = pick_angle(self.narration_style)
         print(f"  Script angle: {angle.describe()}")
         system_prompt = self._build_continuous_prompt(self.narration_style) + "\n\n" + variety_block(angle)
+        base_user_prompt = user_prompt
+        best_plan = None
 
         for attempt in range(max_retries):
             try:
@@ -1136,6 +1165,14 @@ Output ONLY the JSON, no other text."""
 
                 # Parse and validate
                 plan = self._parse_continuous_plan(content, total_seconds, words_per_second)
+                n_words = len(plan.narration.split())
+                if best_plan is None or n_words > len(best_plan.narration.split()):
+                    best_plan = plan
+                if n_words < word_count * 0.8 and attempt < max_retries - 1:
+                    print(f"  WARNING: narration too short ({n_words}/{word_count} words), retrying...")
+                    user_prompt = (base_user_prompt + f"\n\nYour last narration had only {n_words} words. "
+                                   f"Write about {word_count} words so the voiceover fills the whole video.")
+                    continue
                 if not loop_mode:
                     limit = int(total_seconds * words_per_second * 1.1)
                     if len(plan.narration.split()) > int(total_seconds * words_per_second * 1.15):
@@ -1159,8 +1196,14 @@ IMPORTANT: Output ONLY valid JSON with "narration" (string) and "clips" (array o
 Include {num_clips} clips."""
                     continue
                 else:
+                    if best_plan is not None:
+                        print(f"  Using the longest valid plan ({len(best_plan.narration.split())} words)")
+                        return best_plan
                     raise ValueError(f"Failed to generate valid plan after {max_retries} attempts: {str(e)}")
 
+        if best_plan is not None:
+            print(f"  Using the longest valid plan ({len(best_plan.narration.split())} words)")
+            return best_plan
         raise ValueError(f"Failed to generate valid plan after {max_retries} attempts")
 
     def _parse_continuous_plan(self, content: str, target_duration: float,

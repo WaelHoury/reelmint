@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="LICENSE.md"><img alt="License: PolyForm Noncommercial + commercial output" src="https://img.shields.io/badge/license-PolyForm%20NC%20%2B%20output-0E8C84"></a>
-  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
+  <img alt="Python 3.10 to 3.12" src="https://img.shields.io/badge/python-3.10%E2%80%933.12-3776ab">
   <img alt="Runs locally" src="https://img.shields.io/badge/runs-locally-3EE6A8">
   <a href="https://github.com/WaelHoury/reelmint/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/WaelHoury/reelmint/actions/workflows/ci.yml/badge.svg"></a>
 </p>
@@ -99,8 +99,11 @@ Ports 3000 (web app) and 8000 (API) must be free. To use others, change the host
 
 ### Command line (no Docker)
 
+Use Python 3.10, 3.11 or 3.12: the Kokoro voice doesn't install on 3.13 yet. Check with `python3 --version`; on a Mac with a newer Python, `brew install python@3.12` and use `python3.12` below.
+
 ```bash
-python -m venv venv && source venv/bin/activate
+python3.12 -m venv venv && source venv/bin/activate      # or python3.10 / python3.11
+# Windows: py -3.12 -m venv venv  then  venv\Scripts\activate
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm     # used by the Kokoro voice
 cp .env.example .env                        # paste your PEXELS_API_KEY

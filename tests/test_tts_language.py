@@ -39,3 +39,29 @@ def test_tts_generator_whisper_language_and_piper_default():
     expected = "piper.exe" if os.name == "nt" else "piper"
     assert tts_generator.DEFAULT_PIPER_EXECUTABLE == expected
     assert gen.piper == expected
+
+
+def test_long_espeak_path_is_redirected_to_short_copy(tmp_path, monkeypatch):
+    import sys, types
+    import tts_generator
+    deep = tmp_path / ("d" * 180) / "espeakng_loader"
+    (deep / "espeak-ng-data").mkdir(parents=True)
+    (deep / "espeak-ng-data" / "phontab").write_bytes(b"x")
+    (deep / "libespeak-ng.dylib").write_bytes(b"lib")
+    fake = types.SimpleNamespace(get_data_path=lambda: str(deep / "espeak-ng-data"),
+                                 get_library_path=lambda: str(deep / "libespeak-ng.dylib"))
+    monkeypatch.setitem(sys.modules, "espeakng_loader", fake)
+    monkeypatch.setattr(tts_generator.tempfile, "gettempdir", lambda: str(tmp_path / "t"))
+    short = tts_generator.ensure_short_espeak_path()
+    assert short is not None
+    assert len(fake.get_data_path()) <= tts_generator.ESPEAK_MAX_DATA_PATH
+    assert (tmp_path / "t" / "reelmint-espeak" / "espeak-ng-data" / "phontab").exists()
+
+
+def test_short_espeak_path_left_alone(monkeypatch):
+    import sys, types
+    import tts_generator
+    fake = types.SimpleNamespace(get_data_path=lambda: "/short/espeak-ng-data",
+                                 get_library_path=lambda: "/short/libespeak-ng.dylib")
+    monkeypatch.setitem(sys.modules, "espeakng_loader", fake)
+    assert tts_generator.ensure_short_espeak_path() is None

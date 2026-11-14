@@ -52,6 +52,42 @@ def kokoro_lang_for_voice(voice_id: Optional[str], fallback: str = 'a') -> str:
     return fallback
 
 
+# espeak-ng (used by Kokoro for words outside its dictionary) keeps its data path in
+# a fixed-size buffer. When the install folder is deep, the path overflows, espeak
+# falls back to a path from its build machine, and the whole process exits. Copying
+# its small data folder (~20 MB, once) to a short location avoids that.
+ESPEAK_MAX_DATA_PATH = 160
+
+
+def ensure_short_espeak_path() -> Optional[str]:
+    """Point espeakng_loader at a short copy of its files when its path is too long.
+
+    Returns the short directory used, or None when no change was needed. Must run
+    before misaki/kokoro are imported, since they initialise espeak on import.
+    """
+    try:
+        import espeakng_loader
+        data_path = espeakng_loader.get_data_path()
+        lib_path = espeakng_loader.get_library_path()
+    except Exception:
+        return None
+    if len(data_path) <= ESPEAK_MAX_DATA_PATH:
+        return None
+    import shutil
+    short_dir = os.path.join(tempfile.gettempdir(), "reelmint-espeak")
+    short_data = os.path.join(short_dir, "espeak-ng-data")
+    short_lib = os.path.join(short_dir, os.path.basename(lib_path))
+    if len(short_data) > ESPEAK_MAX_DATA_PATH:
+        short_dir = os.path.join(os.path.expanduser("~"), ".reelmint-espeak")
+        short_data = os.path.join(short_dir, "espeak-ng-data")
+        short_lib = os.path.join(short_dir, os.path.basename(lib_path))
+    if not (os.path.exists(os.path.join(short_data, "phontab")) and os.path.exists(short_lib)):
+        shutil.copytree(os.path.dirname(lib_path), short_dir, dirs_exist_ok=True)
+    espeakng_loader.get_data_path = lambda: short_data
+    espeakng_loader.get_library_path = lambda: short_lib
+    return short_dir
+
+
 # One KPipeline per language code, shared by every TTSGenerator in the process.
 _kokoro_pipelines: Dict[str, object] = {}
 _kokoro_pipelines_lock = threading.Lock()
@@ -67,6 +103,7 @@ def get_kokoro_pipeline(lang_code: str):
         pipeline = _kokoro_pipelines.get(lang_code)
         if pipeline is None:
             try:
+                ensure_short_espeak_path()
                 from kokoro import KPipeline
             except ImportError:
                 raise ImportError(

@@ -60,10 +60,13 @@ def _settings():
     return True, "parsed"
 
 
-@check("Python 3.10+")
+@check("Python 3.10 to 3.12")
 def _python():
     v = sys.version_info
-    return v >= (3, 10), f"{v.major}.{v.minor}.{v.micro}"
+    found = f"{v.major}.{v.minor}.{v.micro}"
+    if v >= (3, 13):
+        return False, f"{found}: the Kokoro voice needs Python 3.12 or older; create the venv with python3.12"
+    return v >= (3, 10), found
 
 
 @check("FFmpeg with subtitle support")
