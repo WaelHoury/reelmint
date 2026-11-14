@@ -183,7 +183,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             current_tts_engine = os.getenv("TTS_ENGINE", "kokoro").lower()
             if current_tts_engine == "kokoro":
                 kokoro_speed = float(os.getenv("KOKORO_SPEED", "1.0"))
-                words_per_second = 3.0 * kokoro_speed
+                words_per_second = 2.5 * kokoro_speed  # Kokoro's measured rate at speed 1.0
             elif current_tts_engine == "chatterbox":
                 words_per_second = 2.5
             else:
@@ -489,7 +489,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             # Clips already used in this video: no shot repeats another's footage.
             used_clips = ClipReservations()
             clip_topic = prompt or (script_text or "")[:160]
-            candidates_count = int(os.getenv("CLIP_CANDIDATES", "5"))
+            candidates_count = int(os.getenv("CLIP_CANDIDATES", "3"))
 
             clip_results = [None] * num_clips
 
@@ -734,9 +734,9 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                     'orientation': orientation,
                     'scale': float(os.getenv("SUBSCRIBE_SCALE", "0")) or None,
                     'margin_bottom': int(os.getenv("SUBSCRIBE_MARGIN_BOTTOM", "50")),
-                    'chromakey_color': os.getenv("SUBSCRIBE_CHROMAKEY_COLOR", "0x00FF00"),
-                    'chromakey_similarity': float(os.getenv("SUBSCRIBE_CHROMAKEY_SIMILARITY", "0.3")),
-                    'chromakey_blend': float(os.getenv("SUBSCRIBE_CHROMAKEY_BLEND", "0.15")),
+                    'chromakey_color': os.getenv("SUBSCRIBE_CHROMAKEY_COLOR", "0x60FA01"),
+                    'chromakey_similarity': float(os.getenv("SUBSCRIBE_CHROMAKEY_SIMILARITY", "0.25")),
+                    'chromakey_blend': float(os.getenv("SUBSCRIBE_CHROMAKEY_BLEND", "0.18")),
                 }
             else:
                 print(f"    Warning: Subscribe video not found at {subscribe_path}, skipping overlay")
@@ -934,7 +934,7 @@ def _cli_words_per_second() -> float:
         return float(wps_override)
     tts_engine = os.getenv("TTS_ENGINE", "kokoro").lower()
     if tts_engine == "kokoro":
-        return 3.0 * float(os.getenv("KOKORO_SPEED", "1.0"))
+        return 2.5 * float(os.getenv("KOKORO_SPEED", "1.0"))  # Kokoro's measured rate at speed 1.0
     if tts_engine == "chatterbox":
         return 2.5
     return 3.0

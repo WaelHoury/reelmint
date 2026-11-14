@@ -95,6 +95,8 @@ docker compose up --build
 
 Open **http://localhost:3000**. Postgres, Redis, the API, two render workers and the frontend all start together, and database migrations run on first boot. There's no sign-up: it's your machine, so it's your account.
 
+Ports 3000 (web app) and 8000 (API) must be free. To use others, change the host side of `ports:` in `docker-compose.yml` (e.g. `"3001:3000"`; if you move 8000, update `YOUTUBE_REDIRECT_URI` to match). On Docker Desktop, give Docker at least 8 GB of memory (Settings > Resources): each render worker is limited to 2 CPUs and 3 GB. Voice, caption and footage-matching models download into `./cache` on first use.
+
 ### Command line (no Docker)
 
 ```bash
@@ -148,7 +150,7 @@ Every setting is documented in [`.env.example`](.env.example).
 | **Format** | `portrait` (Shorts, TikTok, Reels), `landscape`, `square`; 30 s up to about 3 min |
 | **Narration style** | `viral`, `informative`, `funny`, `storytelling`, `motivational`, `creative` |
 | **Captions** | `youtube`, `tiktok` (word-by-word highlight) or `minimal`; font, color, outline and position in the editor |
-| **Voices** | Kokoro (about 50 voices across several languages, CPU is fine), Chatterbox (expressive, needs CUDA and `pip install chatterbox-tts`), Fish Audio (cloud) |
+| **Voices** | Kokoro (40 voices in American and British English, French, Italian, Hindi and Japanese, CPU is fine; Japanese also needs `pip install "misaki[ja]"`), Chatterbox (expressive, needs CUDA and `pip install chatterbox-tts`), Fish Audio (cloud) |
 | **Look** | Color presets `balanced`, `warm`, `cool`, `vibrant`, `cinematic`, or your own `.cube` LUT; transitions `crossfade`, `dissolve`, `wipe`, `slide` |
 | **Music** | Drop royalty-free tracks into `music/<mood>/`; the mood is matched to the topic. See [music/README.md](music/README.md) |
 | **Loop mode** | `ENABLE_VIDEO_LOOP=true` makes the ending flow back into the start, for Shorts that replay |

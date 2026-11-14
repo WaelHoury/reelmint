@@ -16,9 +16,12 @@ build/
 
 # Project-specific
 temp/
-cache/
-output/
-models/
+cache/*
+!cache/.gitkeep
+output/*
+!output/.gitkeep
+models/*
+!models/.gitkeep
 
 # Generated videos
 *.mp4
@@ -50,8 +53,8 @@ test_*.mp4
 test_*.wav
 
 # Per-video working data (clips, narration, project.json)
-projects/
-temp/
+projects/*
+!projects/.gitkeep
 
 # Frontend
 node_modules/

@@ -1,11 +1,10 @@
 """Video generation and download API routes."""
 
 import asyncio
-import functools
 import logging
 
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
 logger = logging.getLogger(__name__)
@@ -14,8 +13,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 from app.api.schemas import JobStatusResponse, VideoDownloadResponse
-from app.api.services.session_store import session_store
-from app.api.services.video_service import video_service, regenerate_subtitles
+from app.api.services.video_service import video_service, regenerate_subtitles, can_start_generation
 from app.api.services.editor_service import video_edit_lock_key
 from app.api.deps import get_current_user, get_current_user_from_token_param, get_owned_session, is_superuser
 from app.db.models import User
@@ -29,7 +27,6 @@ def _reupload_video_to_r2(session) -> None:
     Updates render_version and r2_video_key in the DB.
     Non-fatal: logs a warning on failure so the subtitle update still succeeds.
     """
-    from app.core.config import settings
     from app.db.base import SessionLocal
     from app.db.models import Video
     from app.api.services.r2_storage import r2_storage, r2_video_key
@@ -64,7 +61,7 @@ def _reupload_video_to_r2(session) -> None:
 
 class UpdateSubtitlesRequest(BaseModel):
     """Request to update subtitle settings and re-generate."""
-    style: Optional[str] = Field(default="youtube", description="Preset: youtube, tiktok, minimal")
+    style: Optional[str] = Field(default=None, description="Preset: youtube, tiktok, minimal; omitted = keep the video's current style")
     font: Optional[str] = Field(default=None, description="Font name")
     font_size: Optional[int] = Field(default=None, ge=24, le=96, description="Font size")
     color: Optional[str] = Field(default=None, description="Text color hex (#RRGGBB)")
@@ -94,7 +91,8 @@ async def start_video_generation(request: Request, session_id: str, user: User =
             current_step=status_data.get('current_step') or session.current_step or 'Processing...',
         )
 
-    if session.status != "clips_ready":
+    # clips_ready, or retrying a failed render that still has its clips
+    if not can_start_generation(session):
         raise HTTPException(
             status_code=400,
             detail=f"Clips must be confirmed first. Current status: {session.status}"
@@ -129,6 +127,8 @@ async def get_job_status(session_id: str, user: User = Depends(get_current_user)
         current_step=status_data.get('current_step') or session.current_step,
         error_message=status_data.get('error_message'),
         output_url=status_data.get('output_url'),
+        queue_position=status_data.get('queue_position'),
+        queue_length=status_data.get('queue_length'),
     )
 
 

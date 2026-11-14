@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { generateClips, getClips, updateClip, confirmClips } from '../api'
+import { generateClips, getClips, updateClip, confirmClips, apiErrorMessage } from '../api'
 
 const props = defineProps({
   sessionId: { type: String, required: true },
@@ -66,7 +66,7 @@ async function startClipGeneration() {
     generating.value = true
     startPolling()
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to start clip generation')
+    ElMessage.error(apiErrorMessage(err, 'Failed to start clip generation'))
   } finally {
     loading.value = false
   }
@@ -141,7 +141,7 @@ async function saveClipEdit(clipIndex) {
     editingClip.value = null
     ElMessage.success('Clip updated with new video')
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to update clip')
+    ElMessage.error(apiErrorMessage(err, 'Failed to update clip'))
   } finally {
     updatingClip.value = false
   }
@@ -153,7 +153,7 @@ async function handleConfirm() {
     const { data } = await confirmClips(props.sessionId)
     emit('confirmed', { clips: clips.value })
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to confirm clips')
+    ElMessage.error(apiErrorMessage(err, 'Failed to confirm clips'))
   } finally {
     confirming.value = false
   }

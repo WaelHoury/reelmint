@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { createSession, getStyles, getVoiceCatalog, getVoicePreview } from '../api'
+import { createSession, getStyles, getVoiceCatalog, getVoicePreview, apiErrorMessage } from '../api'
 
 const props = defineProps({
   mode: { type: String, default: 'longform' },
@@ -286,22 +286,41 @@ const orientationOptions = computed(() => {
   ]
 })
 
-const durationMin = computed(() => isShorts.value ? 15 : 10)
+// Shorts: 15 s to 3 min. Long-form: 10 s to 10 min (0.5 to 10 in minutes)
+const SHORTS_MAX_SECONDS = 180
+const LONGFORM_MAX_SECONDS = 600
+const durationMin = computed(() => {
+  if (isShorts.value) return 15
+  return form.value.durationUnit === 'minutes' ? 0.5 : 10
+})
 const durationMax = computed(() => {
-  if (isShorts.value) return 60
-  return form.value.durationUnit === 'minutes' ? 10 : 600
+  if (isShorts.value) return SHORTS_MAX_SECONDS
+  return form.value.durationUnit === 'minutes' ? LONGFORM_MAX_SECONDS / 60 : LONGFORM_MAX_SECONDS
 })
 const durationStep = computed(() => {
   if (isShorts.value) return 5
   return form.value.durationUnit === 'minutes' ? 0.5 : 10
 })
 
+// The backend takes whole seconds
 const durationInSeconds = computed(() => {
   if (form.value.durationUnit === 'minutes') {
-    return form.value.durationSeconds * 60
+    return Math.round(form.value.durationSeconds * 60)
   }
   return form.value.durationSeconds
 })
+
+// Keep the same length when the unit changes (60 seconds <-> 1 minute)
+function onDurationUnitChange(unit) {
+  const value = form.value.durationSeconds
+  if (!value) return
+  if (unit === 'minutes') {
+    const minutes = Math.round((value / 60) * 2) / 2
+    form.value.durationSeconds = Math.min(LONGFORM_MAX_SECONDS / 60, Math.max(0.5, minutes))
+  } else {
+    form.value.durationSeconds = Math.min(LONGFORM_MAX_SECONDS, Math.max(10, Math.round(value * 60)))
+  }
+}
 
 const canSubmit = computed(() => {
   if (catalogLoading.value) return false
@@ -356,8 +375,7 @@ async function handleSubmit() {
       titleError.value = detail.message || 'A video with this title already exists. Choose a different title.'
       return
     }
-    const message = typeof detail === 'string' ? detail : detail?.message
-    ElMessage.error(message || 'Failed to create session')
+    ElMessage.error(apiErrorMessage(err, 'Failed to create session'))
   } finally {
     loading.value = false
   }
@@ -444,6 +462,7 @@ async function handleSubmit() {
             v-if="!isShorts"
             v-model="form.durationUnit"
             style="width: 120px"
+            @change="onDurationUnitChange"
           >
             <el-option label="Seconds" value="seconds" />
             <el-option label="Minutes" value="minutes" />

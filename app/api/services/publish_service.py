@@ -67,6 +67,11 @@ class PublishService:
         started it (prevents login-CSRF / attacker account linking).
         """
         self._validate_provider(provider)
+        if provider == "youtube" and not (settings.youtube_client_id and settings.youtube_client_secret):
+            raise PublishServiceError(
+                "YouTube publishing isn't set up yet. Add YOUTUBE_CLIENT_ID and "
+                "YOUTUBE_CLIENT_SECRET to your .env (see the README) and restart."
+            )
         mod = self._get_provider_module(provider)
 
         state = secrets.token_urlsafe(32)

@@ -1,6 +1,9 @@
-"""Automated installer for Piper TTS on Windows.
+"""Automated installer for Piper TTS. Windows only.
 
-Downloads and sets up Piper TTS with a default voice model.
+Downloads the Piper Windows release and a default voice model. On macOS and
+Linux, install Piper yourself (see https://github.com/rhasspy/piper) and set
+PIPER_EXECUTABLE / PIPER_MODEL_PATH in .env. Piper is a command-line-only voice
+(TTS_ENGINE=piper); the web app uses Kokoro, Chatterbox or Fish Audio.
 """
 
 import requests

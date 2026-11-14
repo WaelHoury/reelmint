@@ -34,10 +34,15 @@ def get_configured_provider_names() -> List[str]:
         os.getenv("TTS_ENABLED_PROVIDERS", "").split(",")
     )
     if explicit:
-        return explicit
+        names = explicit
+    else:
+        legacy = (settings.tts_engine or "").strip().lower()
+        names = [legacy] if legacy else []
 
-    legacy = (settings.tts_engine or "").strip().lower()
-    return [legacy] if legacy else []
+    # A Fish Audio key is enough to unlock Fish voices; no need to also list it.
+    if (settings.fish_audio_api_key or "").strip() and "fish" not in names:
+        names = names + ["fish"]
+    return names
 
 
 class TTSProviderRegistry:

@@ -180,12 +180,5 @@ export function uploadsPerDay(intervalMinutes, count) {
 
 // --- Errors ---
 
-export function apiErrorMessage(err, fallback = 'Something went wrong') {
-  const detail = err?.response?.data?.detail
-  if (typeof detail === 'string' && detail) return detail
-  if (Array.isArray(detail) && detail.length > 0) {
-    return detail.map((d) => d?.msg || String(d)).join('; ')
-  }
-  if (detail && typeof detail === 'object' && detail.message) return detail.message
-  return fallback
-}
+// Shared with the rest of the app; kept here so existing imports work
+export { apiErrorMessage } from '../../api'

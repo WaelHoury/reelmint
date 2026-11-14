@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { getConnectedAccounts, startOAuth, disconnectAccount } from '../../api'
+import { getConnectedAccounts, startOAuth, disconnectAccount, apiErrorMessage } from '../../api'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,7 +29,7 @@ async function connectYouTube() {
     const { data } = await startOAuth('youtube', '/account')
     window.location.href = data.auth_url
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to start YouTube connection')
+    ElMessage.error(apiErrorMessage(err, 'Failed to start YouTube connection'))
     connecting.value = false
   }
 }
@@ -55,7 +55,7 @@ async function handleReconnect(account) {
     const { data } = await startOAuth(account.provider, '/account')
     window.location.href = data.auth_url
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to start reconnection')
+    ElMessage.error(apiErrorMessage(err, 'Failed to start reconnection'))
     connecting.value = false
   }
 }

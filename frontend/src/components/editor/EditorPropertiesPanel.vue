@@ -30,31 +30,37 @@
             <span class="info-value">{{ formatTime(selectedClip.start_time) }} — {{ formatTime(selectedClip.end_time) }}</span>
           </div>
           <el-divider />
-          <div class="form-group">
-            <label>Trim Start (s)</label>
-            <el-input-number
-              :model-value="selectedClip.trim_start || 0"
-              @update:model-value="updateClip('trim_start', $event)"
-              :step="0.5" :min="0" :max="maxTrim('trim_end')" :precision="1"
-              size="small"
-              style="width: 100%"
-            />
-          </div>
-          <div class="form-group">
-            <label>Trim End (s)</label>
-            <el-input-number
-              :model-value="selectedClip.trim_end || 0"
-              @update:model-value="updateClip('trim_end', $event)"
-              :step="0.5" :min="0" :max="maxTrim('trim_start')" :precision="1"
-              size="small"
-              style="width: 100%"
-            />
-          </div>
-          <p class="trim-hint">Offset from the start/end of the source video. Changes require rendering.</p>
-          <el-divider />
-          <el-button type="warning" size="small" @click="$emit('replace-clip', selected.index)" style="width:100%">
-            Replace Clip
-          </el-button>
+          <!-- The loop copy repeats clip 1 so the video loops; the server rejects edits to it -->
+          <p v-if="selectedClip.loop_copy" class="trim-hint">
+            Mirrors the first clip so the video loops. Edit clip 1 instead.
+          </p>
+          <template v-else>
+            <div class="form-group">
+              <label>Trim Start (s)</label>
+              <el-input-number
+                :model-value="selectedClip.trim_start || 0"
+                @update:model-value="updateClip('trim_start', $event)"
+                :step="0.5" :min="0" :max="maxTrim('trim_end')" :precision="1"
+                size="small"
+                style="width: 100%"
+              />
+            </div>
+            <div class="form-group">
+              <label>Trim End (s)</label>
+              <el-input-number
+                :model-value="selectedClip.trim_end || 0"
+                @update:model-value="updateClip('trim_end', $event)"
+                :step="0.5" :min="0" :max="maxTrim('trim_start')" :precision="1"
+                size="small"
+                style="width: 100%"
+              />
+            </div>
+            <p class="trim-hint">Offset from the start/end of the source video. Changes require rendering.</p>
+            <el-divider />
+            <el-button type="warning" size="small" @click="$emit('replace-clip', selected.index)" style="width:100%">
+              Replace Clip
+            </el-button>
+          </template>
         </div>
       </template>
 

@@ -57,3 +57,7 @@ test_*.py
 
 # Project data (mounted as volume)
 projects/
+
+# Frontend (runs in its own node container)
+frontend/node_modules
+frontend/dist

@@ -7,6 +7,7 @@ import {
   getPublishJob,
   getPublishJobs,
   retryPublishJob,
+  apiErrorMessage,
 } from '../../api'
 
 const props = defineProps({
@@ -110,7 +111,7 @@ async function handlePublish() {
     activeJob.value = data
     startPolling(data.id)
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to start publish')
+    ElMessage.error(apiErrorMessage(err, 'Failed to start publish'))
   } finally {
     publishing.value = false
   }
@@ -145,7 +146,7 @@ async function handleRetry(jobId) {
     activeJob.value = data
     startPolling(data.id)
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to retry')
+    ElMessage.error(apiErrorMessage(err, 'Failed to retry'))
   }
 }
 

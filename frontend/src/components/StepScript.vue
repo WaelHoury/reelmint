@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { generateScript, updateScript, confirmScript } from '../api'
+import { generateScript, updateScript, confirmScript, apiErrorMessage } from '../api'
 
 const props = defineProps({
   sessionId: { type: String, required: true },
@@ -46,12 +46,13 @@ async function handleGenerate() {
     generated.value = true
     edited.value = false
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to generate script')
+    ElMessage.error(apiErrorMessage(err, 'Failed to generate script'))
   } finally {
     loading.value = false
   }
 }
 
+// Returns true when the script was saved
 async function handleSave() {
   saving.value = true
   try {
@@ -60,29 +61,29 @@ async function handleSave() {
     estimatedDuration.value = data.estimated_duration_seconds
     edited.value = false
     ElMessage.success('Script saved')
+    return true
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to save script')
+    ElMessage.error(apiErrorMessage(err, 'Failed to save script'))
+    return false
   } finally {
     saving.value = false
   }
 }
 
 async function handleConfirm() {
-  // Save first if edited
-  if (edited.value) {
-    await handleSave()
-  }
-
+  if (confirming.value) return
   confirming.value = true
   try {
-    const { data } = await confirmScript(props.sessionId)
+    // Save first if edited; a failed save must not confirm the old script
+    if (edited.value && !(await handleSave())) return
+    await confirmScript(props.sessionId)
     emit('confirmed', {
       script_text: scriptText.value,
       word_count: wordCount.value,
       estimated_duration_seconds: estimatedDuration.value,
     })
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to confirm script')
+    ElMessage.error(apiErrorMessage(err, 'Failed to confirm script'))
   } finally {
     confirming.value = false
   }

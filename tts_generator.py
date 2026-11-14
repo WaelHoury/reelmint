@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import threading
 from pathlib import Path
 import tempfile
 from typing import Optional, Literal, List, Dict
@@ -38,6 +39,49 @@ def whisper_language_for_kokoro(lang_or_voice: Optional[str]) -> Optional[str]:
     return KOKORO_LANG_TO_WHISPER.get(code)
 
 
+def kokoro_lang_for_voice(voice_id: Optional[str], fallback: str = 'a') -> str:
+    """Kokoro lang_code for a voice id: its first letter ('ff_siwis' -> 'f').
+
+    Each Kokoro voice belongs to one language, and the pipeline's lang_code
+    picks the phonemizer, so a French voice must run through a French pipeline.
+    Voice ids without a known prefix use ``fallback`` (KOKORO_LANG).
+    """
+    code = (voice_id or '').strip().lower()
+    if len(code) >= 3 and code[2] == '_' and code[0] in KOKORO_LANG_TO_WHISPER:
+        return code[0]
+    return fallback
+
+
+# One KPipeline per language code, shared by every TTSGenerator in the process.
+_kokoro_pipelines: Dict[str, object] = {}
+_kokoro_pipelines_lock = threading.Lock()
+
+
+def get_kokoro_pipeline(lang_code: str):
+    """Return the cached Kokoro pipeline for ``lang_code``, creating it on first use.
+
+    Pipelines for additional languages reuse the first pipeline's model weights,
+    so only the phonemizer is loaded per language.
+    """
+    with _kokoro_pipelines_lock:
+        pipeline = _kokoro_pipelines.get(lang_code)
+        if pipeline is None:
+            try:
+                from kokoro import KPipeline
+            except ImportError:
+                raise ImportError(
+                    "Kokoro TTS not installed. Install with: pip install kokoro>=0.9.4 soundfile"
+                )
+            existing = next(iter(_kokoro_pipelines.values()), None)
+            shared_model = getattr(existing, 'model', None) if existing is not None else None
+            if shared_model is not None:
+                pipeline = KPipeline(lang_code=lang_code, model=shared_model)
+            else:
+                pipeline = KPipeline(lang_code=lang_code)
+            _kokoro_pipelines[lang_code] = pipeline
+        return pipeline
+
+
 def _resolve_whisper_language(language: Optional[str]) -> Optional[str]:
     """Resolve the language passed to Whisper.
 
@@ -50,6 +94,17 @@ def _resolve_whisper_language(language: Optional[str]) -> Optional[str]:
     if not language or language == 'auto':
         return None
     return language
+
+
+def _whisper_device():
+    """(device, compute_type) for faster-whisper: CUDA float16 when available."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda", "float16"
+    except Exception:
+        pass
+    return "cpu", "int8"
 
 
 def transcribe_with_word_timestamps(audio_path: Path,
@@ -77,7 +132,14 @@ def transcribe_with_word_timestamps(audio_path: Path,
         return []
 
     try:
-        model = WhisperModel(whisper_model, device="cpu", compute_type="int8")
+        device, compute_type = _whisper_device()
+        try:
+            model = WhisperModel(whisper_model, device=device, compute_type=compute_type)
+        except Exception as e:
+            if device == "cpu":
+                raise
+            print(f"    Whisper on {device} failed ({e}), falling back to CPU")
+            model = WhisperModel(whisper_model, device="cpu", compute_type="int8")
         segments, _ = model.transcribe(
             str(audio_path),
             word_timestamps=True,
@@ -158,12 +220,7 @@ class TTSGenerator:
         # Kokoro settings
         self.kokoro_voice = kokoro_voice
         self.kokoro_speed = kokoro_speed
-        self.kokoro_lang = kokoro_lang
-        self._kokoro_pipeline = None  # Lazy initialization
-
-        # Language hint for Whisper word timestamps (None = auto-detect)
-        self.whisper_language = (whisper_language_for_kokoro(kokoro_lang)
-                                 if tts_engine == "kokoro" else None)
+        self.kokoro_lang = kokoro_lang  # Fallback for voice ids without a language prefix
 
         # Orpheus settings
         self.orpheus_voice = orpheus_voice
@@ -179,16 +236,26 @@ class TTSGenerator:
         if self.engine == "piper" and not model_path:
             raise ValueError("model_path must be specified for Piper TTS")
 
+    @property
+    def kokoro_voice_lang(self) -> str:
+        """Kokoro lang_code of the current voice (falls back to kokoro_lang)."""
+        return kokoro_lang_for_voice(self.kokoro_voice, fallback=self.kokoro_lang)
+
+    @property
+    def whisper_language(self) -> Optional[str]:
+        """Language hint for Whisper word timestamps (None = auto-detect)."""
+        if self.engine != "kokoro":
+            return None
+        return whisper_language_for_kokoro(self.kokoro_voice_lang)
+
+    @property
+    def _kokoro_pipeline(self):
+        """Pipeline matching the current voice's language (cached per language)."""
+        return get_kokoro_pipeline(self.kokoro_voice_lang)
+
     def _init_kokoro(self):
-        """Lazy initialization of Kokoro pipeline."""
-        if self._kokoro_pipeline is None:
-            try:
-                from kokoro import KPipeline
-                self._kokoro_pipeline = KPipeline(lang_code=self.kokoro_lang)
-            except ImportError:
-                raise ImportError(
-                    "Kokoro TTS not installed. Install with: pip install kokoro>=0.9.4 soundfile"
-                )
+        """Load the Kokoro pipeline for the current voice's language."""
+        get_kokoro_pipeline(self.kokoro_voice_lang)
 
     def generate(self, text: str, output_path: Path) -> Path:
         """Generate speech audio from text.

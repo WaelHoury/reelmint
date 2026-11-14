@@ -79,6 +79,27 @@ def clip_count_for(total_seconds: float) -> int:
     return max(2, int(round(total_seconds / seconds_per_clip(total_seconds))))
 
 
+def fit_to_word_budget(text: str, max_words: int) -> str:
+    """Trim narration to at most `max_words`, cutting only between sentences.
+
+    LLMs routinely overshoot a word target by 20-30%, which makes a "30 second"
+    video run 36+ seconds. Whole sentences are kept so it never stops mid-thought;
+    if even the first sentence is over budget it is kept as is.
+    """
+    words = text.split()
+    if len(words) <= max_words:
+        return text
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    kept, count = [], 0
+    for sentence in sentences:
+        n = len(sentence.split())
+        if kept and count + n > max_words:
+            break
+        kept.append(sentence)
+        count += n
+    return " ".join(kept)
+
+
 KEYWORD_STOPWORDS = frozenset({
     'a', 'an', 'the', 'and', 'or', 'but', 'nor', 'so', 'yet', 'for', 'of', 'to',
     'in', 'on', 'at', 'by', 'up', 'as', 'is', 'it', 'its', 'be', 'are', 'was',
@@ -742,7 +763,7 @@ Write a narration script that sounds like {s['tone']}.
 
 RULES:
 {s['rules']}
-- Target ~{word_count} words (~3 words per second)
+- Target ~{word_count} words, never more than {int(word_count * 1.1)} (the voiceover must fit the video length)
 - Do NOT use filler phrases or overly formal language
 - NEVER repeat ideas — every sentence must add NEW information
 - Every sentence must be grammatically complete
@@ -794,6 +815,16 @@ Output ONLY the narration text."""
                 if has_banned_opener(content) and attempt < max_retries - 1:
                     print(f"    WARNING: Cliche opening, retrying...")
                     continue
+
+                limit = int(word_count * 1.1)
+                if len(words) > int(word_count * 1.15):
+                    if loop_mode and attempt < max_retries - 1:
+                        # Trimming would cut the bridge back to the opening; ask again
+                        print(f"    WARNING: {len(words)} words is over the {limit}-word limit, retrying...")
+                        continue
+                    if not loop_mode:
+                        content = fit_to_word_budget(content, limit)
+                        print(f"    Trimmed to {len(content.split())} words to fit the video length")
 
                 return content
 
@@ -1105,6 +1136,11 @@ Output ONLY the JSON, no other text."""
 
                 # Parse and validate
                 plan = self._parse_continuous_plan(content, total_seconds, words_per_second)
+                if not loop_mode:
+                    limit = int(total_seconds * words_per_second * 1.1)
+                    if len(plan.narration.split()) > int(total_seconds * words_per_second * 1.15):
+                        plan.narration = fit_to_word_budget(plan.narration, limit)
+                        print(f"  Trimmed narration to {len(plan.narration.split())} words to fit the video length")
                 return plan
 
             except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:

@@ -24,7 +24,7 @@ const router = useRouter()
         <div class="card-tags">
           <span class="ce-tag">Portrait</span>
           <span class="ce-tag">Square</span>
-          <span class="ce-tag">30-60s</span>
+          <span class="ce-tag">15s-3 min</span>
         </div>
         <button class="btn-primary-glow card-btn">
           <el-icon><Plus /></el-icon>

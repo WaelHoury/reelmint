@@ -455,12 +455,31 @@ class EditorService:
         }
         return {"style": style, "overrides": clean, "resolved": resolved, "presets": presets}
 
+    def rendered_duration(self, project_dir: Path, project: dict,
+                          output_path: Path = None, timeline_end: float = None) -> float:
+        """Length of the rendered video, which the timeline must match.
+
+        ``project["duration_seconds"]`` is only the length the user asked for.
+        Prefer the rendered file, then narration + outro, then the clip timeline.
+        """
+        if output_path and Path(output_path).exists():
+            probed = self._probe_duration(Path(output_path))
+            if probed:
+                return round(probed, 3)
+        audio = self._audio_path(project_dir, project)
+        if audio:
+            probed = self._probe_duration(audio)
+            if probed:
+                return round(probed + self._outro_duration(project), 3)
+        if timeline_end:
+            return round(timeline_end, 3)
+        return float(project.get("duration_seconds") or 0)
+
     def get_editor_data(self, project_dir: Path, project: dict, stream_url: str,
                         session_id: str = None, video_id: int = None,
-                        preview_stream_url: str = None) -> dict:
+                        preview_stream_url: str = None, output_path: Path = None) -> dict:
         """Build the full editor data response from a project manifest."""
         orientation = project.get("orientation", "landscape")
-        duration = project.get("duration_seconds", 0)
         transition_duration = self._transition_duration(project)
         outro = self._outro_duration(project)
 
@@ -495,6 +514,9 @@ class EditorService:
                 "loop_copy": bool(c.get("loop_copy")) or (self._loop_mode(project) and i == last),
             })
             current_time = start + rendered
+
+        duration = self.rendered_duration(project_dir, project, output_path,
+                                          timeline_end=current_time)
 
         # Compute subtitle entries from word timestamps
         word_timestamps = project.get("word_timestamps")
@@ -727,6 +749,10 @@ class EditorService:
         finally:
             tmp_out.unlink(missing_ok=True)
 
+        # Swapped clips change who the footage belongs to: keep the credits current
+        if replaced_clips:
+            self._rewrite_credits(project, Path(output_path))
+
         # Update file size in DB
         self._update_video_file_size(project, Path(output_path))
 
@@ -737,6 +763,15 @@ class EditorService:
         self.generate_preview(project_dir, project)
 
         return " + ".join(render_type_parts) if render_type_parts else "finalize"
+
+    @staticmethod
+    def _rewrite_credits(project: dict, output_path: Path) -> None:
+        """Regenerate ``<output>_credits.txt/.json`` from the project's current clips."""
+        from license_tracker import write_credits_for_clips
+        try:
+            write_credits_for_clips(project.get("clips") or [], output_path)
+        except OSError as e:
+            logger.warning("Could not rewrite credits for %s: %s", output_path, e)
 
     @staticmethod
     def _subscribe_overlay(orientation: str):
@@ -751,9 +786,9 @@ class EditorService:
             "orientation": orientation,
             "scale": float(os.getenv("SUBSCRIBE_SCALE", "0")) or None,
             "margin_bottom": int(os.getenv("SUBSCRIBE_MARGIN_BOTTOM", "50")),
-            "chromakey_color": os.getenv("SUBSCRIBE_CHROMAKEY_COLOR", "0x00FF00"),
-            "chromakey_similarity": float(os.getenv("SUBSCRIBE_CHROMAKEY_SIMILARITY", "0.3")),
-            "chromakey_blend": float(os.getenv("SUBSCRIBE_CHROMAKEY_BLEND", "0.15")),
+            "chromakey_color": os.getenv("SUBSCRIBE_CHROMAKEY_COLOR", "0x60FA01"),
+            "chromakey_similarity": float(os.getenv("SUBSCRIBE_CHROMAKEY_SIMILARITY", "0.25")),
+            "chromakey_blend": float(os.getenv("SUBSCRIBE_CHROMAKEY_BLEND", "0.18")),
         }
 
     def _regenerate_subtitles(self, project_dir: Path, project: dict,

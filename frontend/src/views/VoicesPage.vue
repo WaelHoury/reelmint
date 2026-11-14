@@ -8,6 +8,7 @@ import {
   getFishVoice,
   deleteFishVoice,
   getVoicePreview,
+  apiErrorMessage,
 } from '../api'
 
 const route = useRoute()
@@ -199,7 +200,7 @@ async function submitClone() {
     // Start polling for status
     pollVoiceStatus(data.id)
   } catch (err) {
-    const msg = err.response?.data?.detail || 'Failed to create voice clone'
+    const msg = apiErrorMessage(err, 'Failed to create voice clone')
     cloneSubmitError.value = typeof msg === 'string' ? msg : JSON.stringify(msg)
     ElMessage.error(cloneSubmitError.value)
     recordingState.value = 'recorded'

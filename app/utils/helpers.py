@@ -417,10 +417,15 @@ def derive_video_title(input_type: str, text: str, max_length: int = 80) -> str:
     """
     text = re.sub(r"\s+", " ", (text or "")).strip()
     if input_type == "script":
-        words = text.split(" ")
-        title = " ".join(words[:8])
-        if len(words) > 8:
-            title = title.rstrip(".,;:!?") + "…"
+        # The script's first sentence reads like a title when it's short enough
+        first = re.split(r"(?<=[.!?])\s+", text, maxsplit=1)[0].strip()
+        if 0 < len(first) <= 70:
+            title = first.rstrip(".,;:!?")
+        else:
+            words = text.split(" ")
+            title = " ".join(words[:8])
+            if len(words) > 8:
+                title = title.rstrip(".,;:!?") + "…"
     else:
         title = text
     title = title.replace("/", " ").replace("\\", " ").replace("\0", "")

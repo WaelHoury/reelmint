@@ -1,8 +1,11 @@
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { startGeneration, getJobStatus, getVideoDownloadUrl, getVideoStreamUrl, updateSubtitles, checkActiveGeneration } from '../api'
+import {
+  startGeneration, getJobStatus, getVideoDownloadUrl, getVideoStreamUrl, updateSubtitles,
+  checkActiveGeneration, getSessionEditorData, apiErrorMessage,
+} from '../api'
 
 const router = useRouter()
 
@@ -18,8 +21,8 @@ const progressPercent = ref(0)
 const currentStep = ref('')
 const errorMessage = ref('')
 const jobId = ref(null)
+// 1-based place among waiting renders (the render in progress is ahead of #1)
 const queuePosition = ref(null)
-const queueLength = ref(null)
 let pollTimer = null
 
 // Video player
@@ -36,6 +39,16 @@ const subtitleForm = ref({
   outline_color: '#000000',
   position: 'bottom',
 })
+// Fields the user set; only these are sent, the rest follow the preset for
+// this video's orientation (as in the editor)
+const SUBTITLE_OVERRIDE_KEYS = ['font', 'font_size', 'color', 'outline_color', 'position']
+const subtitleOverrides = ref(new Set())
+// Preset values for this video's orientation, from the server
+const subtitlePresets = ref(null)
+const subtitleStateLoading = ref(false)
+const subtitleStateLoaded = ref(false)
+// Bumped to re-sync a colour picker after it was cleared
+const pickerKey = ref(0)
 
 // Live CSS subtitle preview
 const previewEnabled = ref(true)
@@ -107,7 +120,6 @@ onMounted(async () => {
       currentStep.value = data.current_step || ''
       jobId.value = data.job_id
       queuePosition.value = data.queue_position ?? null
-      queueLength.value = data.queue_length ?? null
       startPolling()
       return
     }
@@ -154,10 +166,11 @@ async function handleGenerate() {
   try {
     const { data } = await startGeneration(props.sessionId)
     jobId.value = data.job_id
+    queuePosition.value = data.queue_position ?? null
     startPolling()
   } catch (err) {
     status.value = 'failed'
-    errorMessage.value = err.response?.data?.detail || 'Failed to start generation'
+    errorMessage.value = apiErrorMessage(err, 'Failed to start generation')
     ElMessage.error(errorMessage.value)
   }
 }
@@ -172,7 +185,6 @@ function startPolling() {
       currentStep.value = data.current_step || ''
       errorMessage.value = data.error_message || ''
       queuePosition.value = data.queue_position ?? null
-      queueLength.value = data.queue_length ?? null
 
       if (data.status === 'completed' || data.status === 'failed') {
         clearInterval(pollTimer)
@@ -195,26 +207,80 @@ function downloadVideo() {
   window.open(getVideoDownloadUrl(props.sessionId), '_blank')
 }
 
+// Landscape fallback only; the server sends each preset for this video's orientation
+const FALLBACK_PRESETS = {
+  youtube: { font: 'Arial', font_size: 52, color: '#FFFFFF', outline_color: '#000000', position: 'bottom' },
+  tiktok: { font: 'Montserrat-Bold', font_size: 64, color: '#FFFFFF', outline_color: '#000000', position: 'center' },
+  minimal: { font: 'Helvetica', font_size: 44, color: '#FFFFFF', outline_color: '#000000', position: 'bottom' },
+}
+
+function presetValues(name) {
+  return subtitlePresets.value?.[name] || FALLBACK_PRESETS[name] || FALLBACK_PRESETS.youtube
+}
+
+// Current style, values and overrides, so the form starts from what the video shows
+async function loadSubtitleState() {
+  if (subtitleStateLoaded.value || subtitleStateLoading.value) return
+  subtitleStateLoading.value = true
+  try {
+    const { data } = await getSessionEditorData(props.sessionId)
+    const subs = data.subtitles || {}
+    if (subs.style) subtitleForm.value.style = subs.style
+    for (const key of SUBTITLE_OVERRIDE_KEYS) {
+      if (subs[key] !== null && subs[key] !== undefined && subs[key] !== '') subtitleForm.value[key] = subs[key]
+    }
+    subtitleOverrides.value = new Set(subs.overrides || [])
+    subtitlePresets.value = subs.presets || null
+    subtitleStateLoaded.value = true
+  } catch {
+    // Keep the defaults; Apply still sends only the fields the user changes
+  } finally {
+    subtitleStateLoading.value = false
+  }
+}
+
+watch(showSubtitleEditor, (open) => {
+  if (open) loadSubtitleState()
+})
+
+function setSubtitleField(key, value) {
+  subtitleForm.value[key] = value
+  subtitleOverrides.value = new Set(subtitleOverrides.value).add(key)
+}
+
+// Clearing a picker emits null: fall back to the preset's colour, no override
+function setSubtitleColor(key, value) {
+  if (value) {
+    setSubtitleField(key, value.toUpperCase())
+    return
+  }
+  subtitleForm.value[key] = presetValues(subtitleForm.value.style)[key] || subtitleForm.value[key]
+  const overrides = new Set(subtitleOverrides.value)
+  overrides.delete(key)
+  subtitleOverrides.value = overrides
+  pickerKey.value++
+}
+
 function onStylePresetChange(preset) {
-  const presets = {
-    youtube: { font: 'Arial', font_size: 52, color: '#FFFFFF', outline_color: '#000000', position: 'bottom' },
-    tiktok: { font: 'Montserrat-Bold', font_size: 64, color: '#FFFFFF', outline_color: '#000000', position: 'center' },
-    minimal: { font: 'Helvetica', font_size: 44, color: '#FFFFFF', outline_color: '#000000', position: 'bottom' },
-  }
-  if (presets[preset]) {
-    Object.assign(subtitleForm.value, presets[preset])
-  }
+  // A preset was applied: every field now follows it
+  Object.assign(subtitleForm.value, presetValues(preset))
+  subtitleOverrides.value = new Set()
 }
 
 async function applySubtitleChanges() {
   subtitleLoading.value = true
   try {
-    await updateSubtitles(props.sessionId, subtitleForm.value)
+    const f = subtitleForm.value
+    const payload = { style: f.style }
+    for (const key of subtitleOverrides.value) {
+      if (f[key] !== null && f[key] !== undefined && f[key] !== '') payload[key] = f[key]
+    }
+    await updateSubtitles(props.sessionId, payload)
     // Reload the video player by bumping the cache key
     videoKey.value = Date.now()
     ElMessage.success('Subtitles updated!')
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Failed to update subtitles')
+    ElMessage.error(apiErrorMessage(err, 'Failed to update subtitles'))
   } finally {
     subtitleLoading.value = false
   }
@@ -231,8 +297,8 @@ async function applySubtitleChanges() {
         <el-icon :size="48" color="var(--ce-accent-light)"><Loading /></el-icon>
       </div>
       <h3 class="progress-heading">{{ status === 'queued' ? 'Queued...' : 'Generating your video...' }}</h3>
-      <p v-if="status === 'queued' && queuePosition" class="step-label">
-        Position {{ queuePosition }} of {{ queueLength }} in queue
+      <p v-if="status === 'queued' && queuePosition > 0" class="step-label">
+        Waiting in queue: {{ queuePosition }} ahead
       </p>
       <p v-else class="step-label">{{ currentStep }}</p>
 
@@ -318,7 +384,11 @@ async function applySubtitleChanges() {
 
               <!-- Font -->
               <el-form-item label="Font">
-                <el-select v-model="subtitleForm.font" style="width: 100%">
+                <el-select
+                  :model-value="subtitleForm.font"
+                  @update:model-value="setSubtitleField('font', $event)"
+                  style="width: 100%"
+                >
                   <el-option v-for="f in fontOptions" :key="f" :value="f" :label="f" />
                 </el-select>
               </el-form-item>
@@ -326,7 +396,8 @@ async function applySubtitleChanges() {
               <!-- Font Size -->
               <el-form-item label="Font Size">
                 <el-slider
-                  v-model="subtitleForm.font_size"
+                  :model-value="subtitleForm.font_size"
+                  @update:model-value="setSubtitleField('font_size', $event)"
                   :min="24"
                   :max="96"
                   :step="2"
@@ -338,16 +409,29 @@ async function applySubtitleChanges() {
               <!-- Colors Row -->
               <div class="color-row">
                 <el-form-item label="Text Color" style="flex: 1">
-                  <el-color-picker v-model="subtitleForm.color" show-alpha />
+                  <el-color-picker
+                    :key="'color-' + pickerKey"
+                    :model-value="subtitleForm.color"
+                    @update:model-value="setSubtitleColor('color', $event)"
+                    color-format="hex"
+                  />
                 </el-form-item>
                 <el-form-item label="Outline Color" style="flex: 1">
-                  <el-color-picker v-model="subtitleForm.outline_color" show-alpha />
+                  <el-color-picker
+                    :key="'outline-' + pickerKey"
+                    :model-value="subtitleForm.outline_color"
+                    @update:model-value="setSubtitleColor('outline_color', $event)"
+                    color-format="hex"
+                  />
                 </el-form-item>
               </div>
 
               <!-- Position -->
               <el-form-item label="Position">
-                <el-radio-group v-model="subtitleForm.position">
+                <el-radio-group
+                  :model-value="subtitleForm.position"
+                  @update:model-value="setSubtitleField('position', $event)"
+                >
                   <el-radio-button value="bottom">Bottom</el-radio-button>
                   <el-radio-button value="center">Center</el-radio-button>
                   <el-radio-button value="top">Top</el-radio-button>
@@ -359,6 +443,7 @@ async function applySubtitleChanges() {
                 <el-button
                   type="primary"
                   :loading="subtitleLoading"
+                  :disabled="subtitleStateLoading"
                   @click="applySubtitleChanges"
                 >
                   Apply Changes

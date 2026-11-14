@@ -53,6 +53,7 @@ def _load_editor_data(project_dir: Path, output_path, stream_url: str,
             session_id=session_id,
             video_id=video_id if video_id is not None else project.get("video_id"),
             preview_stream_url=preview_stream_url,
+            output_path=Path(output_path) if output_path else None,
         )
 
 

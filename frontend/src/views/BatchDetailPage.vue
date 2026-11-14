@@ -50,6 +50,8 @@ const canStart = computed(() => {
 const startLabel = computed(() => (status.value === 'paused' ? 'Resume' : 'Start'))
 const canPause = computed(() => status.value === 'running')
 const canCancel = computed(() => ['draft', 'running', 'paused'].includes(status.value))
+// The server refuses new videos for a cancelled batch
+const canAddItems = computed(() => status.value !== 'cancelled')
 
 const settingsSummary = computed(() => {
   const s = batch.value?.settings || {}
@@ -264,7 +266,7 @@ onBeforeUnmount(() => {
             <el-button v-if="canPause" type="primary" plain :loading="action === 'pause'" :disabled="!!action" @click="handlePause">
               <el-icon class="btn-icon"><VideoPause /></el-icon>Pause
             </el-button>
-            <el-button type="primary" plain :disabled="!!action" @click="addDialog = true">
+            <el-button v-if="canAddItems" type="primary" plain :disabled="!!action" @click="addDialog = true">
               <el-icon class="btn-icon"><Plus /></el-icon>Add videos
             </el-button>
             <el-button v-if="canCancel" type="danger" plain :loading="action === 'cancel'" :disabled="!!action" @click="handleCancel">
@@ -292,7 +294,7 @@ onBeforeUnmount(() => {
           </span>
         </div>
         <div v-if="items.length === 0" class="empty-items">
-          No videos in this batch. Use "Add videos" to queue some.
+          No videos in this batch.<template v-if="canAddItems"> Use "Add videos" to queue some.</template>
         </div>
         <BatchItemRow
           v-for="(item, index) in items"

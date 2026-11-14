@@ -59,7 +59,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { searchReplacementClips } from '../../api'
+import { searchReplacementClips, apiErrorMessage } from '../../api'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -115,7 +115,7 @@ async function search() {
     searchedKeywords.value = keywords
   } catch (err) {
     results.value = []
-    ElMessage.error(err.response?.data?.detail || 'Clip search failed')
+    ElMessage.error(apiErrorMessage(err, 'Clip search failed'))
   } finally {
     isSearching.value = false
   }

@@ -71,3 +71,20 @@ def test_styles_do_not_fix_openings_or_endings():
         rules = style["rules"].lower()
         assert "open with" not in rules and "open by" not in rules, name
         assert "end with" not in rules, name
+
+
+def test_narration_is_trimmed_to_fit_the_video_length():
+    from scene_planner import fit_to_word_budget
+    text = "One two three. Four five six seven. Eight nine ten eleven twelve."
+    assert fit_to_word_budget(text, 8) == "One two three. Four five six seven."
+    assert fit_to_word_budget(text, 100) == text
+    assert fit_to_word_budget("A very long first sentence here.", 2) == "A very long first sentence here."
+
+
+def test_overlong_narration_gets_trimmed(monkeypatch):
+    planner = ScenePlanner(provider="ollama", model="m", base_url="http://localhost:11434")
+    long_script = " ".join(f"Sentence number {i} is here." for i in range(40))  # 200 words
+    monkeypatch.setattr(planner, "_call_llm", lambda *a, **k: long_script)
+    out = planner.generate_narration("topic", 0.5, 2.5)  # 30 s * 2.5 = 75 words
+    assert len(out.split()) <= int(75 * 1.1)
+    assert out.endswith(".")

@@ -1,7 +1,7 @@
 """License tracking for video assets used in generation."""
 
 from dataclasses import dataclass, asdict
-from typing import List
+from typing import Iterable, List, Optional, Tuple
 from pathlib import Path
 import json
 from datetime import datetime
@@ -121,3 +121,44 @@ class LicenseTracker:
     def get_assets_by_scene(self, scene_index: int) -> List[Asset]:
         """Get all assets used in a specific scene."""
         return [asset for asset in self.assets if asset.scene_index == scene_index]
+
+
+def license_for_provider(provider: Optional[str]) -> Tuple[str, str]:
+    """(provider display name, license name) for a stock media provider."""
+    name = (provider or "Pexels").strip() or "Pexels"
+    if name.lower() == "pixabay":
+        return "Pixabay", "Pixabay License"
+    if name.lower() == "pexels":
+        return "Pexels", "Pexels License"
+    return name, "Unknown License"
+
+
+def credits_paths(output_path: Path) -> Tuple[Path, Path]:
+    """The ``<name>_credits.txt`` / ``.json`` files that sit next to a render."""
+    output_path = Path(output_path)
+    stem = output_path.parent / f"{output_path.stem}_credits"
+    return stem.with_suffix(".txt"), stem.with_suffix(".json")
+
+
+def write_credits_for_clips(clips: Iterable[dict], output_path: Path) -> Tuple[Path, Path]:
+    """Rewrite a render's credits files from its current clip list.
+
+    ``clips`` are project/session clip dicts (``author``, ``author_url``,
+    ``provider``). Loop copies repeat shot 0, so they are not listed twice.
+    Returns the (txt, json) paths written.
+    """
+    tracker = LicenseTracker()
+    for i, clip in enumerate(clips or []):
+        if clip.get("loop_copy"):
+            continue
+        provider, license_name = license_for_provider(clip.get("provider"))
+        tracker.add_asset({
+            "url": clip.get("author_url") or "",
+            "author": clip.get("author") or "Unknown",
+            "provider": provider,
+            "license": license_name,
+        }, clip.get("index", i))
+    txt_path, json_path = credits_paths(output_path)
+    tracker.export_credits_txt(txt_path)
+    tracker.export_credits_json(json_path)
+    return txt_path, json_path

@@ -42,6 +42,24 @@ def has_module(name):
     return importlib.util.find_spec(name) is not None
 
 
+@check(".env settings load")
+def _settings():
+    try:
+        from app.core.config import settings  # noqa: F401
+    except ImportError as e:
+        return False, f"{e} (pip install -r requirements.txt)"
+    except Exception as e:  # pydantic ValidationError: say which line is wrong
+        errors = getattr(e, "errors", None)
+        if callable(errors):
+            parts = []
+            for err in errors():
+                field = ".".join(str(x) for x in err.get("loc", ())).upper() or "settings"
+                parts.append(f"{field}: {err.get('msg')} (got {err.get('input')!r})")
+            return False, "; ".join(parts)
+        return False, str(e)
+    return True, "parsed"
+
+
 @check("Python 3.10+")
 def _python():
     v = sys.version_info

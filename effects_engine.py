@@ -330,7 +330,7 @@ class EffectsEngine:
                                 scale: float = None, margin_bottom: int = 50,
                                 chromakey_color: str = '0x60FA01',
                                 chromakey_similarity: float = 0.25,
-                                chromakey_blend: float = 0.12) -> Path:
+                                chromakey_blend: float = 0.18) -> Path:
         """Overlay a green-screen video (e.g. subscribe button) onto the main video.
 
         The overlay appears centered at the midpoint of the video duration,
@@ -596,8 +596,8 @@ class EffectsEngine:
             ow = int(w * sc)
             mb = p.get('margin_bottom', 50)
             ck_color = p.get('chromakey_color', '0x60FA01')
-            ck_sim = p.get('chromakey_similarity', 0.3)
-            ck_blend = p.get('chromakey_blend', 0.12)
+            ck_sim = p.get('chromakey_similarity', 0.25)
+            ck_blend = p.get('chromakey_blend', 0.18)
 
             # Overlay: scale + colorkey subscribe, overlay onto main video
             overlay_chain = (
@@ -798,8 +798,8 @@ class EffectsEngine:
             ow = int(w * sc)
             mb = p.get('margin_bottom', 50)
             ck_color = p.get('chromakey_color', '0x60FA01')
-            ck_sim = p.get('chromakey_similarity', 0.3)
-            ck_blend = p.get('chromakey_blend', 0.12)
+            ck_sim = p.get('chromakey_similarity', 0.25)
+            ck_blend = p.get('chromakey_blend', 0.18)
 
             overlay_filter = (
                 f"[{subscribe_idx}:v]scale={ow}:-1:flags=lanczos,"

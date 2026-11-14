@@ -34,7 +34,7 @@ def test_resolve_language(monkeypatch):
 
 
 def test_tts_generator_whisper_language_and_piper_default():
-    gen = tts_generator.TTSGenerator(tts_engine="kokoro", kokoro_lang="f")
+    gen = tts_generator.TTSGenerator(tts_engine="kokoro", kokoro_voice="ff_siwis")
     assert gen.whisper_language == "fr"
     expected = "piper.exe" if os.name == "nt" else "piper"
     assert tts_generator.DEFAULT_PIPER_EXECUTABLE == expected

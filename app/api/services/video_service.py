@@ -19,6 +19,13 @@ from app.utils.helpers import sanitize_filename
 logger = logging.getLogger(__name__)
 
 
+def can_start_generation(session: VideoSession) -> bool:
+    """Clips confirmed, or a failed render that still has its clips (retry)."""
+    if session.status == "clips_ready":
+        return True
+    return session.status == "failed" and bool(session.clips)
+
+
 class VideoService:
     """Handles video generation business logic."""
 
@@ -274,7 +281,7 @@ class VideoService:
         Raises:
             ValueError: If session not ready, or user already has an active generation
         """
-        if session.status not in ("clips_ready",):
+        if not can_start_generation(session):
             raise ValueError("Clips must be confirmed before generating video")
 
         # Per-session dedup lock (prevents double-click / refresh race)
@@ -299,7 +306,14 @@ class VideoService:
                 )
 
         previous_status = session.status
+        previous_error = session.error_message
         session.status = "generating"
+        if previous_status == "failed":
+            # Retrying a failed render: start from a clean slate
+            session.error_message = None
+            session.progress_percent = 0
+            session.current_step = "Queued for processing..."
+            session.job_id = None
         session_store.update(session)
 
         # Queue the job. If enqueue fails (e.g. Redis down), undo the status
@@ -313,6 +327,7 @@ class VideoService:
         except Exception:
             logger.exception("Failed to enqueue video generation for session %s", session.session_id)
             session.status = previous_status
+            session.error_message = previous_error
             try:
                 session_store.update(session)
             except Exception:
@@ -709,6 +724,8 @@ def generate_video_task(session_id: str):
 
         session.status = "completed"
         session.output_path = str(output_path)
+        credits_txt = output_path.parent / f"{output_path.stem}_credits.txt"
+        session.credits_path = str(credits_txt) if credits_txt.exists() else None
         session.progress_percent = 100
         session.current_step = "Complete!"
         session_store.update(session)
@@ -958,8 +975,9 @@ def regenerate_subtitles(session: VideoSession, subtitle_settings: dict) -> Vide
 
     project_dir = Path(project_dir)
     project = editor_service.load_project(project_dir)
-    style = subtitle_settings.get('style') or project.get('subtitles', {}).get('style') \
-        or os.getenv("SUBTITLE_STYLE", "youtube")
+    # No style in the request = keep the one the video already has
+    style = subtitle_settings.get('style') or session.subtitle_style \
+        or project.get('subtitles', {}).get('style') or os.getenv("SUBTITLE_STYLE", "youtube")
     render_settings = {
         'enabled': True,
         'style': style,

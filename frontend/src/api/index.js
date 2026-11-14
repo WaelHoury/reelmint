@@ -5,6 +5,21 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+// Readable message from a failed request. FastAPI sends `detail` as a string,
+// an object with `message`, or (422) a list of { loc, msg } validation errors.
+export function apiErrorMessage(err, fallback = 'Something went wrong') {
+  const detail = err?.response?.data?.detail
+  if (typeof detail === 'string' && detail) return detail
+  if (Array.isArray(detail) && detail.length > 0) {
+    return detail
+      .map((d) => (d && typeof d === 'object' ? d.msg : null) || String(d))
+      .map((msg) => msg.replace(/^Value error, /, ''))
+      .join('; ')
+  }
+  if (detail && typeof detail === 'object' && detail.message) return detail.message
+  return fallback
+}
+
 // === Local user ===
 
 export function getMe() {

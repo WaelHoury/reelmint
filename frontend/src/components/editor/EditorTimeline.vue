@@ -60,7 +60,7 @@
               :zoom="zoom"
               :selected="selected?.type === 'clip' && selected?.index === clip.index"
               color="var(--ce-track-video)"
-              :trimmable="true"
+              :trimmable="!clip.loop_copy"
               :trim-start="clip.trim_start || 0"
               :trim-end="clip.trim_end || 0"
               :clip-duration="clip.duration_seconds || 0"

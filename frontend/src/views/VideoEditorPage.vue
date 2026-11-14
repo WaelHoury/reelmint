@@ -102,6 +102,7 @@ import {
   renderVideoChanges,
   getSessionPreviewStreamUrl,
   getVideoPreviewStreamUrl,
+  apiErrorMessage,
 } from '../api'
 import EditorVideoPreview from '../components/editor/EditorVideoPreview.vue'
 import EditorPropertiesPanel from '../components/editor/EditorPropertiesPanel.vue'
@@ -188,7 +189,7 @@ async function loadEditorData({ silent = false } = {}) {
     subtitleOverrides.value = new Set(editorData.value.subtitles?.overrides || [])
     subtitleEntriesEdited.value = false
   } catch (err) {
-    const detail = err.response?.data?.detail || err.message
+    const detail = apiErrorMessage(err, err.message)
     if (silent) {
       ElMessage.warning(`Rendered, but the editor could not refresh: ${detail}`)
     } else {
@@ -249,8 +250,13 @@ function onAudioSettingsChange(settings) {
   pendingAudio.value = true
 }
 
+// The loop copy (last clip in loop mode) mirrors clip 1; the server rejects edits to it
+function isLoopCopy(index) {
+  return editorData.value?.clips?.[index]?.loop_copy === true
+}
+
 function onClipSettingsChange({ index, changes }) {
-  if (!editorData.value?.clips) return
+  if (!editorData.value?.clips || isLoopCopy(index)) return
   const clips = [...editorData.value.clips]
   clips[index] = { ...clips[index], ...changes }
   editorData.value.clips = clips
@@ -258,7 +264,7 @@ function onClipSettingsChange({ index, changes }) {
 }
 
 function onTimelineTrimChange({ index, trimStart, trimEnd }) {
-  if (!editorData.value?.clips) return
+  if (!editorData.value?.clips || isLoopCopy(index)) return
   const clips = [...editorData.value.clips]
   clips[index] = {
     ...clips[index],
@@ -271,7 +277,7 @@ function onTimelineTrimChange({ index, trimStart, trimEnd }) {
 
 function onOpenClipSearch(clipIndex) {
   const clip = editorData.value?.clips?.[clipIndex]
-  if (clip) {
+  if (clip && !clip.loop_copy) {
     clipSearchKeywords.value = clip.keywords || []
     clipSearchIndex.value = clipIndex
     // Slot length: the replacement should cover it without a freeze-frame
@@ -360,7 +366,7 @@ async function handleRender() {
     if (err.response?.status === 429) {
       ElMessage.error('Too many renders, wait a minute')
     } else {
-      ElMessage.error(err.response?.data?.detail || 'Render failed')
+      ElMessage.error(apiErrorMessage(err, 'Render failed'))
     }
   } finally {
     isRendering.value = false

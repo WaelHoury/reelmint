@@ -131,11 +131,11 @@ class Settings(BaseSettings):
     custom_lut_file: str = ""
     enable_subscribe_overlay: bool = False
     subscribe_video_path: str = "subscribe.mp4"
-    subscribe_scale: float = 0.0
+    subscribe_scale: float = 0.0  # 0 = auto per orientation
     subscribe_margin_bottom: int = 50
-    subscribe_chromakey_color: str = "0x00FF00"
-    subscribe_chromakey_similarity: float = 0.3
-    subscribe_chromakey_blend: float = 0.15
+    subscribe_chromakey_color: str = "0x60FA01"
+    subscribe_chromakey_similarity: float = 0.25
+    subscribe_chromakey_blend: float = 0.18
 
     # === Loop/Outro ===
     enable_video_loop: bool = False
@@ -143,7 +143,7 @@ class Settings(BaseSettings):
     fade_out_duration: float = 1.0
 
     # === ASR ===
-    whisper_model: str = "tiny"
+    whisper_model: str = "base"
 
     # === API ===
     api_host: str = "0.0.0.0"
@@ -154,7 +154,7 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 24
 
     # === Database ===
-    database_url: str = "postgresql+psycopg://aivideo:aivideo_dev@localhost:5432/aivideo"
+    database_url: str = "postgresql+psycopg://reelmint:reelmint_dev@localhost:5432/reelmint"
 
     # === Cleanup ===
     temp_retention_hours: int = 48
@@ -168,7 +168,7 @@ class Settings(BaseSettings):
 
     # === Social Publishing ===
     social_token_encryption_key: str = ""  # Fernet key for OAuth tokens; auto-generated in cache_dir if empty
-    social_enabled_providers: str = ""     # Comma-separated: youtube,tiktok,instagram
+    social_enabled_providers: str = "youtube"  # Comma-separated; currently supported: youtube
 
     # YouTube OAuth (for publishing)
     youtube_client_id: str = ""
@@ -218,6 +218,9 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         extra = "ignore"  # Ignore extra env vars
+        # A blank line in .env (e.g. `WORDS_PER_SECOND=`) means "use the default",
+        # not an empty value that fails to parse.
+        env_ignore_empty = True
 
 
 # Global settings instance
@@ -243,6 +246,10 @@ def get_resolution(orientation: str) -> tuple:
     return RESOLUTIONS.get(orientation, LANDSCAPE_RESOLUTION)
 
 
+# Kokoro's measured speaking rate at speed 1.0 (planning at 3.0 made videos ~20% too long)
+KOKORO_WORDS_PER_SECOND = 2.5
+
+
 def get_words_per_second(provider: str = None) -> float:
     """Calculate words per second based on TTS engine and settings.
 
@@ -256,7 +263,7 @@ def get_words_per_second(provider: str = None) -> float:
     engine = provider or settings.tts_default_provider or settings.tts_engine
 
     if engine == "kokoro":
-        return 3.0 * settings.kokoro_speed
+        return KOKORO_WORDS_PER_SECOND * settings.kokoro_speed
     elif engine == "chatterbox":
         return 2.5
     elif engine == "fish":
