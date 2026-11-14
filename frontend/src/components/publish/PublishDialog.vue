@@ -63,7 +63,7 @@ watch(visible, async (v) => {
   } else {
     stopPolling()
   }
-})
+}, { immediate: true }) // the dialog is often mounted already open (v-if + v-model)
 
 async function loadAccounts() {
   loadingAccounts.value = true

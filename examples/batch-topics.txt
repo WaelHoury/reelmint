@@ -1,0 +1,6 @@
+# One topic per line. Blank lines and lines starting with # are ignored.
+# Render them all, one at a time:
+#   python generate_video.py --batch examples/batch-topics.txt --duration 0.5 --output out/
+Is a hot dog a sandwich?
+Why do cats knock things off tables?
+Is a straw one hole or two?

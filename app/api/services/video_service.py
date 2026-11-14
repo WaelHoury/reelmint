@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -210,14 +211,21 @@ class VideoService:
             enable_pixabay=settings.enable_pixabay,
             enable_image_fallback=settings.enable_image_fallback,
         )
-        videos = searcher.search(keywords, max_results=5, orientation=session.orientation)
-
-        media_info = videos[0] if videos else None
-
-        # Same still-image fallback as initial clip generation
-        if not media_info and settings.enable_image_fallback:
-            images = searcher.search_images(keywords, max_results=3, orientation=session.orientation)
-            media_info = images[0] if images else None
+        # Never pick a clip the video's other shots already use (same broadening
+        # ladder, incl. the still-image fallback, as initial clip generation).
+        from app.media.clip_picker import ClipReservations, clip_key, pick_clip
+        others = ClipReservations(
+            clip_key(c) for j, c in enumerate(session.clips or []) if j != clip_index
+        )
+        media_info, _rung = pick_clip(
+            searcher,
+            {'keywords': keywords, 'visual_description': visual_description},
+            session.orientation,
+            min_duration=_shot_seconds(session, len(session.clips or [])),
+            reservations=others,
+            topic=session.prompt or session.title,
+            label=f"#{clip_index}",
+        )
 
         media_type = getattr(media_info, 'media_type', 'video') if media_info else None
         session.clips[clip_index] = {
@@ -398,6 +406,15 @@ class VideoService:
             }
 
 
+def _shot_seconds(session, clip_count: int) -> float:
+    """Roughly how long each shot is on screen (clips at least this long are preferred)."""
+    total = session.estimated_duration_seconds or session.duration_seconds or 0
+    if not total or not clip_count:
+        return 0.0
+    transition = float(os.getenv("TRANSITION_DURATION", "0.5"))
+    return (float(total) + max(0, clip_count - 1) * transition) / clip_count
+
+
 def generate_clips_task(session_id: str):
     """Background task: LLM clip generation + parallel Pexels search with progressive updates.
 
@@ -418,6 +435,7 @@ def generate_clips_task(session_id: str):
         from scene_planner import create_planner
         from video_searcher import CachedVideoSearcher
         from app.media.multi_source_searcher import MultiSourceSearcher
+        from app.media.clip_picker import ClipReservations, pick_clip
 
         # --- Stage 1: LLM clip descriptions ---
         t_llm = time.time()
@@ -473,44 +491,42 @@ def generate_clips_task(session_id: str):
         total_clips = len(plan.clips)
         completed = 0
 
+        # Clips already picked for this video's shots. Parallel searches
+        # reserve their pick atomically, so no two shots get the same clip.
+        reservations = ClipReservations()
+        shot_seconds = _shot_seconds(session, total_clips)
+        topic = session.prompt or session.title
+
         def _search_one(idx, clip):
             """Search for a single clip. Returns (index, clip_dict)."""
             try:
-                videos = searcher.search(clip.keywords, max_results=5, orientation=session.orientation)
-                video_info = videos[0] if videos else None
+                media_info, rung = pick_clip(
+                    searcher, clip, session.orientation,
+                    min_duration=shot_seconds,
+                    reservations=reservations,
+                    topic=topic,
+                    label=f"{session_id[:8]}#{idx}",
+                )
+                media_type = (getattr(media_info, 'media_type', None) or 'video') if media_info else None
+                if media_info and rung not in (None, 'full_keywords'):
+                    logger.info("Session %s clip %d: used rung '%s'", session_id, idx, rung)
+                if media_type == 'image':
+                    return idx, {
+                        'index': idx,
+                        'keywords': clip.keywords,
+                        'visual_description': clip.visual_description,
+                        'video_preview_url': media_info.preview_url,
+                        'video_id': str(media_info.id),
+                        'author': media_info.author,
+                        'author_url': media_info.url,
+                        'duration_seconds': None,
+                        'search_status': 'ready',
+                        'search_error': None,
+                        'media_type': 'image',
+                        'provider': getattr(media_info, 'provider', 'Pixabay'),
+                    }
 
-                if not video_info:
-                    # Retry with fewer keywords
-                    if len(clip.keywords) > 2:
-                        videos = searcher.search(clip.keywords[:2], max_results=5, orientation=session.orientation)
-                        video_info = videos[0] if videos else None
-
-                if not video_info:
-                    # Final generic fallback
-                    generic = [clip.keywords[0]] if clip.keywords else ['nature']
-                    videos = searcher.search(generic, max_results=5, orientation=session.orientation)
-                    video_info = videos[0] if videos else None
-
-                # Image fallback via Pixabay
-                if not video_info and settings.enable_image_fallback:
-                    images = searcher.search_images(clip.keywords, max_results=3, orientation=session.orientation)
-                    if images:
-                        image_info = images[0]
-                        return idx, {
-                            'index': idx,
-                            'keywords': clip.keywords,
-                            'visual_description': clip.visual_description,
-                            'video_preview_url': image_info.preview_url,
-                            'video_id': str(image_info.id),
-                            'author': image_info.author,
-                            'author_url': image_info.url,
-                            'duration_seconds': None,
-                            'search_status': 'ready',
-                            'search_error': None,
-                            'media_type': 'image',
-                            'provider': getattr(image_info, 'provider', 'Pixabay'),
-                        }
-
+                video_info = media_info
                 return idx, {
                     'index': idx,
                     'keywords': clip.keywords,
@@ -593,6 +609,19 @@ def _release_generation_lock(session: VideoSession):
         logger.warning("Failed to release generation lock for user %s", session.user_id)
 
 
+def _subtitle_overrides(session) -> Optional[dict]:
+    """Caption font/size/colors/position chosen for this video, if any."""
+    overrides = {
+        'font': session.subtitle_font,
+        'font_size': session.subtitle_font_size,
+        'color': session.subtitle_color,
+        'outline_color': session.subtitle_outline_color,
+        'position': session.subtitle_position,
+    }
+    overrides = {k: v for k, v in overrides.items() if v}
+    return overrides or None
+
+
 def generate_video_task(session_id: str):
     """Background task for video generation.
 
@@ -642,6 +671,7 @@ def generate_video_task(session_id: str):
             session.trimmed_clip_paths = data.get('trimmed_clips')
             session.clip_duration = data.get('clip_duration')
             session.transition_duration = data.get('transition_duration')
+            session.render_info = data.get('render')
             session_store.update(session)
 
         # Generate video using existing function
@@ -671,6 +701,10 @@ def generate_video_task(session_id: str):
             intermediate_callback=_save_intermediates,
             pre_selected_clips=session.clips if session.clips else None,
             tts_selection=tts_sel,
+            subtitles_enabled=session.subtitles_enabled,
+            subtitle_style=session.subtitle_style,
+            subtitle_settings=_subtitle_overrides(session),
+            loop_mode=session.loop_mode,
         )
 
         session.status = "completed"
@@ -844,11 +878,66 @@ def _find_project_dir(session):
     return None
 
 
+def build_media_searcher():
+    """Pexels (+ Pixabay when enabled) searcher with the Redis result cache."""
+    from video_searcher import CachedVideoSearcher
+    from app.media.multi_source_searcher import MultiSourceSearcher
+
+    redis_client = Redis.from_url(settings.redis_url)
+    pexels_searcher = CachedVideoSearcher(
+        api_key=settings.pexels_api_key,
+        redis_client=redis_client,
+        cache_ttl=settings.clip_search_cache_ttl,
+    )
+    pixabay_searcher = None
+    if (settings.enable_pixabay or settings.enable_image_fallback) and settings.pixabay_api_key:
+        from app.media.pixabay_search import CachedPixabaySearcher, PIXABAY_CACHE_TTL
+        pixabay_searcher = CachedPixabaySearcher(
+            api_key=settings.pixabay_api_key,
+            redis_client=redis_client,
+            cache_ttl=getattr(settings, 'pixabay_cache_ttl', PIXABAY_CACHE_TTL),
+        )
+    return MultiSourceSearcher(
+        pexels_searcher=pexels_searcher,
+        pixabay_searcher=pixabay_searcher,
+        enable_pixabay=settings.enable_pixabay,
+        enable_image_fallback=settings.enable_image_fallback,
+    )
+
+
+def normalize_subtitle_settings(subtitle_settings: dict) -> dict:
+    """Validate/normalize wizard subtitle settings (colours -> #RRGGBB).
+
+    Raises:
+        ValueError: with a message fit for the user (the route returns 400).
+    """
+    from subtitle_generator import SubtitleGenerator
+
+    out = dict(subtitle_settings or {})
+    for key in ('color', 'outline_color'):
+        if out.get(key):
+            try:
+                out[key] = SubtitleGenerator.normalize_color(out[key])
+            except ValueError:
+                label = 'Text colour' if key == 'color' else 'Outline colour'
+                raise ValueError(f"{label} {out[key]!r} is not a colour; use #RRGGBB")
+    if out.get('position') and out['position'] not in ('bottom', 'center', 'top'):
+        raise ValueError("Position must be bottom, center or top")
+    if out.get('font') and not re.fullmatch(r"[A-Za-z0-9 _.\-]{1,64}", out['font']):
+        raise ValueError("Font name may only contain letters, digits, spaces, '-', '_' and '.'")
+    return out
+
+
 def regenerate_subtitles(session: VideoSession, subtitle_settings: dict) -> VideoSession:
     """Re-generate subtitles with custom settings without re-running the full pipeline.
 
+    Uses the persisted project (projects/<video_id>/) and the editor's render
+    path, so the result matches the first render (outro, loop, transitions,
+    audio padding) and project.json stays in sync with the editor. The caller
+    holds the video's edit lock.
+
     Args:
-        session: Completed session with intermediate files
+        session: Completed session
         subtitle_settings: Dict with keys: style, font, font_size, color, outline_color, position
 
     Returns:
@@ -856,181 +945,44 @@ def regenerate_subtitles(session: VideoSession, subtitle_settings: dict) -> Vide
     """
     if session.status != "completed":
         raise ValueError("Video must be completed before editing subtitles")
+    if not session.output_path:
+        raise ValueError("This video has no output file to update")
 
-    if not session.video_no_audio_path or not session.final_audio_path:
-        raise ValueError("Intermediate files not available for subtitle re-generation")
+    subtitle_settings = normalize_subtitle_settings(subtitle_settings)
 
-    from pathlib import Path
-    from subtitle_generator import SubtitleGenerator
-    from effects_engine import EffectsEngine
-    import os
+    project_dir = _find_project_dir(session)
+    if not project_dir or not (Path(project_dir) / "project.json").exists():
+        raise ValueError("Project files for this video are no longer available, so subtitles can't be re-generated")
 
-    video_no_audio = Path(session.video_no_audio_path)
-    final_audio = Path(session.final_audio_path)
-    temp_dir = Path(session.temp_dir_path) if session.temp_dir_path else video_no_audio.parent
+    from app.api.services.editor_service import editor_service, EditorValidationError
 
-    # Fallback to project directory if temp files are gone
-    if not video_no_audio.exists() or not final_audio.exists():
-        project_dir = _find_project_dir(session)
-        if project_dir:
-            project_json = project_dir / "project.json"
-            if project_json.exists():
-                with open(project_json, "r") as f:
-                    project = json.load(f)
-                vna = project.get("output", {}).get("video_no_audio")
-                af = project.get("audio", {}).get("mixed_file") or project.get("audio", {}).get("narration_file")
-                if vna:
-                    video_no_audio = project_dir / vna
-                if af:
-                    final_audio = project_dir / af
-                temp_dir = project_dir
-
-    # Generate video_no_audio on-demand if it doesn't exist
-    if not video_no_audio.exists() and project_dir:
-        from app.api.services.editor_service import EditorService
-        editor_svc = EditorService()
-        proj_json = project_dir / "project.json"
-        if proj_json.exists():
-            with open(proj_json, "r") as f:
-                proj = json.load(f)
-            try:
-                video_no_audio = editor_svc._ensure_video_no_audio(project_dir, proj)
-            except ValueError:
-                pass
-
-    if not video_no_audio.exists() or not final_audio.exists():
-        raise ValueError("Intermediate video/audio files no longer exist on disk")
-
-    # Build custom overrides from settings
-    custom_overrides = {}
-    if subtitle_settings.get('font'):
-        custom_overrides['font'] = subtitle_settings['font']
-    if subtitle_settings.get('font_size'):
-        custom_overrides['font_size'] = subtitle_settings['font_size']
-    if subtitle_settings.get('color'):
-        custom_overrides['color'] = subtitle_settings['color']
-    if subtitle_settings.get('outline_color'):
-        custom_overrides['outline_color'] = subtitle_settings['outline_color']
-    if subtitle_settings.get('position'):
-        custom_overrides['position'] = subtitle_settings['position']
-
-    style_preset = subtitle_settings.get('style', os.getenv("SUBTITLE_STYLE", "youtube"))
-
-    # Generate new subtitle file
-    sub_gen = SubtitleGenerator(
-        style=style_preset,
-        orientation=session.orientation,
-        custom_overrides=custom_overrides if custom_overrides else None,
-    )
-
-    subtitle_file = temp_dir / "subtitles_custom.ass"
-    word_timestamps = session.word_timestamps
-
-    # Generate heuristic timestamps if empty (e.g. Fish TTS where ASR failed)
-    if not word_timestamps and session.script_text and session.narration_audio_path:
-        narration_path = Path(session.narration_audio_path)
-        if narration_path.exists():
-            from video_assembler import VideoAssembler
-            assembler = VideoAssembler(
-                ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
-                ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe"),
-            )
-            try:
-                total_duration = assembler.get_duration(narration_path)
-                from tts_generator import TTSGenerator
-                words = session.script_text.split()
-                total_weight = sum(TTSGenerator._get_word_weight(w) for w in words)
-                if total_weight > 0:
-                    subtitle_offset = 0.15
-                    t = subtitle_offset
-                    word_timestamps = []
-                    for word in words:
-                        weight = TTSGenerator._get_word_weight(word)
-                        word_dur = total_duration * (weight / total_weight)
-                        word_timestamps.append({
-                            'word': word,
-                            'start': round(t, 3),
-                            'end': round(t + word_dur, 3),
-                        })
-                        t += word_dur
-                    session.word_timestamps = word_timestamps
-                    session_store.update(session)
-            except Exception:
-                pass
-
-    if word_timestamps:
-        if session.orientation in ('portrait', 'square'):
-            sub_gen.generate_karaoke_ass(word_timestamps, subtitle_file)
-        else:
-            sub_gen.generate_phrase_ass(word_timestamps, subtitle_file)
-    else:
-        # Fallback to sentence-based
-        import re
-        narration = session.script_text or ""
-        sentences = re.split(r'(?<=[.!?])\s+', narration.strip())
-        sentences = [s for s in sentences if s.strip()]
-        if sentences:
-            total_duration = session.estimated_duration_seconds or 60
-            total_chars = sum(len(s) for s in sentences)
-            subtitle_scenes = []
-            current_time = 0.0
-            for sentence in sentences:
-                dur = total_duration * (len(sentence) / total_chars) if total_chars > 0 else 0
-                subtitle_scenes.append({
-                    'narration': sentence,
-                    'start_time': current_time,
-                    'duration': dur,
-                })
-                current_time += dur
-            sub_gen.generate_ass(subtitle_scenes, subtitle_file)
-
-    # Re-run finalize with new subtitles
-    finalizer = EffectsEngine(
-        ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
-        ffprobe_path=os.getenv("FFPROBE_PATH", "ffprobe"),
-    )
-
-    output_path = Path(session.output_path)
-
-    # Check for subscribe overlay
-    subscribe_video_path = None
-    subscribe_params = None
-    if os.getenv("ENABLE_SUBSCRIBE_OVERLAY", "false").lower() == "true":
-        subscribe_path = Path(os.getenv("SUBSCRIBE_VIDEO_PATH", "subscribe.mp4"))
-        if not subscribe_path.is_absolute():
-            subscribe_path = Path(os.path.dirname(os.path.abspath(__file__))).parent.parent.parent / subscribe_path
-        if subscribe_path.exists():
-            subscribe_video_path = subscribe_path
-            subscribe_params = {
-                'orientation': session.orientation,
-                'scale': float(os.getenv("SUBSCRIBE_SCALE", "0")) or None,
-                'margin_bottom': int(os.getenv("SUBSCRIBE_MARGIN_BOTTOM", "50")),
-                'chromakey_color': os.getenv("SUBSCRIBE_CHROMAKEY_COLOR", "0x00FF00"),
-                'chromakey_similarity': float(os.getenv("SUBSCRIBE_CHROMAKEY_SIMILARITY", "0.3")),
-                'chromakey_blend': float(os.getenv("SUBSCRIBE_CHROMAKEY_BLEND", "0.15")),
-            }
-
-    fade_dur = 0
-    if not session.loop_mode:
-        fade_dur = float(os.getenv("FADE_OUT_DURATION", "1.0"))
-
-    finalizer.finalize_video(
-        video_no_audio=video_no_audio,
-        audio_path=final_audio,
-        output_path=output_path,
-        subtitle_path=subtitle_file,
-        subscribe_video=subscribe_video_path,
-        subscribe_params=subscribe_params,
-        fade_duration=fade_dur,
-    )
+    project_dir = Path(project_dir)
+    project = editor_service.load_project(project_dir)
+    style = subtitle_settings.get('style') or project.get('subtitles', {}).get('style') \
+        or os.getenv("SUBTITLE_STYLE", "youtube")
+    render_settings = {
+        'enabled': True,
+        'style': style,
+        **{k: subtitle_settings.get(k) for k in ('font', 'font_size', 'color', 'outline_color', 'position')},
+    }
+    try:
+        editor_service.render_changes(
+            project_dir, project,
+            subtitles=render_settings,
+            output_path=Path(session.output_path),
+        )
+    except EditorValidationError as e:
+        raise ValueError(str(e))
 
     # Save subtitle settings to session
-    session.subtitle_style = subtitle_settings.get('style')
+    session.subtitles_enabled = True
+    session.subtitle_style = style
     session.subtitle_font = subtitle_settings.get('font')
     session.subtitle_font_size = subtitle_settings.get('font_size')
     session.subtitle_color = subtitle_settings.get('color')
     session.subtitle_outline_color = subtitle_settings.get('outline_color')
     session.subtitle_position = subtitle_settings.get('position')
+    session.project_dir_path = str(project_dir)
     session_store.update(session)
 
     return session
@@ -1099,6 +1051,56 @@ def _save_video_to_db(session, output_path):
         db.close()
 
 
+def _first_render_outro(render_info: dict, loop_mode) -> float:
+    """Freeze-frame outro seconds the first render added (0 in loop mode)."""
+    if 'outro_duration' in (render_info or {}):
+        return float(render_info.get('outro_duration') or 0)
+    if loop_mode:
+        return 0.0
+    return float(os.getenv("VIDEO_OUTRO_DURATION", "1.0"))
+
+
+def _first_render_fade(render_info: dict, loop_mode) -> float:
+    """Fade-out seconds the first render used (0 in loop mode)."""
+    if 'fade_duration' in (render_info or {}):
+        return float(render_info.get('fade_duration') or 0)
+    if loop_mode:
+        return 0.0
+    return float(os.getenv("FADE_OUT_DURATION", "1.0"))
+
+
+def _first_render_subtitles(session, render_info: dict) -> dict:
+    """Subtitle style + the values the first render actually drew captions with.
+
+    ``overrides`` keeps only what the user explicitly chose, so the editor
+    can tell a preset value from a customisation.
+    """
+    style = ((render_info or {}).get('subtitle_style') or session.subtitle_style
+             or os.getenv("SUBTITLE_STYLE", "youtube"))
+    overrides = (render_info or {}).get('subtitle_overrides')
+    if overrides is None:
+        overrides = _subtitle_overrides(session) or {}
+    resolved = (render_info or {}).get('subtitle_settings')
+    if not resolved:
+        try:
+            from subtitle_generator import SubtitleGenerator
+            resolved = SubtitleGenerator(
+                style=style, orientation=session.orientation,
+                custom_overrides=overrides or None,
+            ).resolved_settings()
+        except Exception:
+            resolved = {}
+    return {
+        "style": style,
+        "font": resolved.get("font", "Arial"),
+        "font_size": resolved.get("font_size", 52),
+        "color": resolved.get("color", "#FFFFFF"),
+        "outline_color": resolved.get("outline_color", "#000000"),
+        "position": resolved.get("position", "bottom"),
+        "overrides": dict(overrides or {}),
+    }
+
+
 def _persist_project_files(session, output_path, video_id):
     """Copy intermediate files to persistent projects/ directory and write project.json.
 
@@ -1149,8 +1151,9 @@ def _persist_project_files(session, output_path, video_id):
             music_file_dest = project_dir / f"background_music{music_ext}"
             shutil.copy2(session.music_file_path, music_file_dest)
 
-        # Copy individual trimmed clips
+        # Copy individual trimmed clips (each shot's untouched footage)
         clip_files = []
+        copied = {}  # source path -> project-relative path
         if session.trimmed_clip_paths:
             for i, clip_path in enumerate(session.trimmed_clip_paths):
                 src = Path(clip_path)
@@ -1158,8 +1161,25 @@ def _persist_project_files(session, output_path, video_id):
                     dest = clips_dir / f"clip_{i}.mp4"
                     shutil.copy2(src, dest)
                     clip_files.append(f"clips/clip_{i}.mp4")
+                    copied[str(src)] = f"clips/clip_{i}.mp4"
                 else:
                     clip_files.append(None)
+
+        # The clip list the render actually concatenated: the loop copy of the
+        # first clip and/or the last clip extended by the freeze-frame outro.
+        render_info = session.render_info or {}
+        render_clips = []
+        for i, clip_path in enumerate(render_info.get('final_clips') or []):
+            if str(clip_path) in copied:
+                render_clips.append(copied[str(clip_path)])
+                continue
+            src = Path(clip_path)
+            if not src.exists():
+                render_clips = []
+                break
+            dest = clips_dir / f"render_{i}.mp4"
+            shutil.copy2(src, dest)
+            render_clips.append(f"clips/render_{i}.mp4")
 
         # Copy subtitles if they exist in temp dir
         subtitle_dest = None
@@ -1186,8 +1206,12 @@ def _persist_project_files(session, output_path, video_id):
             "tts_provider": session.tts_provider,
             "tts_voice_key": session.tts_voice_key,
             "tts_voice_label": session.tts_voice_label,
-            "loop_mode": session.loop_mode,
+            "loop_mode": bool(render_info.get('loop_mode', session.loop_mode)),
             "transition_duration": session.transition_duration or float(os.getenv("TRANSITION_DURATION", "0.5")),
+            "transition_type": render_info.get('transition_type') or os.getenv("TRANSITION_TYPE", "crossfade"),
+            "outro_duration": _first_render_outro(render_info, session.loop_mode),
+            "fade_duration": _first_render_fade(render_info, session.loop_mode),
+            "render_clips": render_clips or None,
             "word_timestamps": session.word_timestamps,
             "clips": [],
             "audio": {
@@ -1200,12 +1224,7 @@ def _persist_project_files(session, output_path, video_id):
             },
             "subtitles": {
                 "enabled": session.subtitles_enabled,
-                "style": session.subtitle_style or os.getenv("SUBTITLE_STYLE", "youtube"),
-                "font": session.subtitle_font or "Arial",
-                "font_size": session.subtitle_font_size or 52,
-                "color": session.subtitle_color or "#FFFFFF",
-                "outline_color": session.subtitle_outline_color or "#000000",
-                "position": session.subtitle_position or "bottom",
+                **_first_render_subtitles(session, render_info),
                 "file": "subtitles.ass" if subtitle_dest else None,
             },
             "output": {
@@ -1223,10 +1242,16 @@ def _persist_project_files(session, output_path, video_id):
                 "video_id": clip_dict.get("video_id"),
                 "author": clip_dict.get("author"),
                 "author_url": clip_dict.get("author_url"),
+                "provider": clip_dict.get("provider") or "Pexels",
+                "media_type": clip_dict.get("media_type") or "video",
                 "duration_seconds": session.clip_duration or clip_dict.get("duration_seconds"),
+                # source_file is never modified; edits write trimmed_file
                 "file": clip_files[i] if i < len(clip_files) else None,
+                "source_file": clip_files[i] if i < len(clip_files) else None,
+                "trimmed_file": None,
                 "trim_start": 0,
                 "trim_end": 0,
+                "pad_seconds": 0,
             }
             project_data["clips"].append(clip_entry)
 

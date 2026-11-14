@@ -1,4 +1,4 @@
-"""Centralized configuration and settings for AI Video Maker."""
+"""Centralized configuration and settings for Reelmint."""
 
 import os
 from pathlib import Path
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     tts_enabled_providers: str = "kokoro"  # Comma-separated: kokoro,chatterbox,fish
     tts_default_provider: str = "kokoro"
     tts_default_voice_key: str = "kokoro:af_heart"  # provider:voice_id
-    tts_preview_text: str = "Welcome to AI Video Maker. This is a preview of how your narration will sound."
+    tts_preview_text: str = "Welcome to Reelmint. This is a preview of how your narration will sound."
 
     # Kokoro
     kokoro_voice: str = "af_heart"

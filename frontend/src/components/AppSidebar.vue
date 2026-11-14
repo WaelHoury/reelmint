@@ -13,13 +13,15 @@ const route = useRoute()
 const router = useRouter()
 
 const menuItems = [
-  { path: '/', icon: 'Plus', label: 'Create', exact: true },
+  { path: '/', icon: 'Plus', label: 'Create', exact: true, also: ['/create/'] },
   { path: '/videos', icon: 'Film', label: 'My Videos' },
+  { path: '/autopilot', icon: 'Timer', label: 'Autopilot' },
   { path: '/voices', icon: 'Microphone', label: 'My Voices' },
   { path: '/account', icon: 'User', label: 'Account' },
 ]
 
 function isActive(item) {
+  if (item.also?.some((prefix) => route.path.startsWith(prefix))) return true
   if (item.exact) {
     return route.path === item.path
   }
@@ -39,9 +41,9 @@ function toggleSidebar() {
   <aside class="sidebar" :class="{ collapsed }">
     <!-- Logo -->
     <div class="sidebar-logo" @click="navigate('/')">
-      <el-icon :size="24" color="#A78BFA"><VideoCamera /></el-icon>
+      <img src="/favicon.png" alt="" class="logo-img" width="28" height="28" />
       <transition name="sidebar-text">
-        <span v-show="!collapsed" class="logo-text">Clipra<span class="logo-dot">.AI</span></span>
+        <span v-show="!collapsed" class="logo-text">Reel<span class="logo-dot">mint</span></span>
       </transition>
     </div>
 
@@ -99,6 +101,12 @@ function toggleSidebar() {
   flex-direction: column;
   z-index: 100;
   transition: width var(--ce-transition-normal);
+  /* not overflow:hidden: the collapse toggle sits on the right border */
+}
+
+.sidebar-logo,
+.sidebar-nav,
+.sidebar-footer {
   overflow: hidden;
 }
 
@@ -118,6 +126,13 @@ function toggleSidebar() {
   flex-shrink: 0;
 }
 
+.logo-img {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+
 .logo-text {
   font-size: 16px;
   font-weight: 700;
@@ -127,7 +142,7 @@ function toggleSidebar() {
 }
 
 .logo-dot {
-  color: var(--ce-purple-light);
+  color: var(--ce-accent-light);
 }
 
 /* Toggle */
@@ -150,9 +165,9 @@ function toggleSidebar() {
 }
 
 .sidebar-toggle:hover {
-  color: var(--ce-purple-light);
+  color: var(--ce-accent-light);
   background: #1a1a1a;
-  border-color: var(--ce-purple-light);
+  border-color: var(--ce-accent-light);
 }
 
 /* Navigation */
@@ -182,6 +197,7 @@ function toggleSidebar() {
   transition: background var(--ce-transition-fast), color var(--ce-transition-fast);
   white-space: nowrap;
   overflow: hidden;
+  position: relative; /* anchors the active indicator */
 }
 
 .nav-item:hover {
@@ -190,8 +206,14 @@ function toggleSidebar() {
 }
 
 .nav-item.active {
-  background: rgba(167, 139, 250, 0.1);
-  color: var(--ce-purple-light);
+  background: rgba(62, 230, 168, 0.1);
+  color: var(--ce-accent-light);
+  font-weight: 600;
+}
+
+.nav-item:focus-visible {
+  outline: 2px solid rgba(62, 230, 168, 0.6);
+  outline-offset: -2px;
 }
 
 .nav-item.active::before {
@@ -201,8 +223,8 @@ function toggleSidebar() {
   top: 50%;
   transform: translateY(-50%);
   width: 3px;
-  height: 24px;
-  background: var(--ce-purple-light);
+  height: 20px;
+  background: var(--ce-accent-light);
   border-radius: 0 3px 3px 0;
 }
 
@@ -263,5 +285,34 @@ function toggleSidebar() {
 
 .collapsed .sidebar-toggle {
   right: -12px;
+}
+
+/* Phones / small tablets: always the compact icon rail */
+@media (max-width: 768px) {
+  .sidebar,
+  .sidebar.collapsed {
+    width: var(--ce-sidebar-collapsed);
+  }
+
+  .sidebar-toggle,
+  .logo-text,
+  .nav-label,
+  .user-name {
+    display: none !important;
+  }
+
+  .sidebar-logo {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .nav-item {
+    justify-content: center;
+  }
+
+  .user-section {
+    justify-content: center;
+    padding: 8px 0;
+  }
 }
 </style>

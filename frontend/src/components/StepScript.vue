@@ -100,7 +100,7 @@ function onScriptInput() {
 
     <!-- Loading state -->
     <div v-if="loading" class="loading-state">
-      <el-icon class="is-loading" :size="32" color="var(--ce-purple-light)"><Loading /></el-icon>
+      <el-icon class="is-loading" :size="32" color="var(--ce-accent-light)"><Loading /></el-icon>
       <p class="loading-text">Generating script from prompt...</p>
     </div>
 

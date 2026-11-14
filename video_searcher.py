@@ -11,6 +11,39 @@ import time
 logger = logging.getLogger(__name__)
 
 
+
+def download_file(url: str, output_path, chunk_size: int = 65536,
+                  connect_read_timeout: float = 30.0, deadline: float = None):
+    """Stream a URL to disk with a per-read timeout AND an overall deadline.
+
+    A connection that trickles bytes never trips the per-read timeout, so the
+    overall deadline (DOWNLOAD_DEADLINE_SECONDS, default 180) makes a slow
+    download fail fast instead of blocking a render for an hour. The partial
+    file is removed on failure.
+    """
+    import os
+    import time
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if deadline is None:
+        deadline = float(os.getenv("DOWNLOAD_DEADLINE_SECONDS", "180"))
+    started = time.monotonic()
+    try:
+        with requests.get(url, stream=True, timeout=connect_read_timeout) as response:
+            response.raise_for_status()
+            with open(output_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                    if time.monotonic() - started > deadline:
+                        raise requests.Timeout(
+                            f"Download took longer than {deadline:.0f}s: {url[:80]}")
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+    return output_path
+
+
 class VideoInfo:
     """Information about a stock video."""
 
@@ -62,34 +95,28 @@ class VideoInfo:
         else:
             return 'square'
 
+    # Renders are 1080p (1920x1080, 1080x1920 or 1080x1080), so the short side
+    # of the source only needs to reach 1080. Bigger files (2K/4K) are 3-4x the
+    # download for no visible gain.
+    TARGET_SHORT_SIDE = 1080
+
     def _select_best_quality(self, video_files: List[Dict]) -> Dict:
-        """Select best quality video file.
+        """Pick the smallest MP4 that is still full 1080p for the final render.
 
-        Prioritizes:
-        1. HD quality (1920x1080)
-        2. Highest width
-        3. MP4 format
-
-        Args:
-            video_files: List of video file options from API
-
-        Returns:
-            Best quality video file dict with link, width, height
+        Falls back to the largest available file when nothing reaches 1080p.
         """
         if not video_files:
             return {}
 
-        # Filter for MP4 files
-        mp4_files = [vf for vf in video_files if vf.get('file_type') == 'video/mp4']
+        mp4_files = [vf for vf in video_files if vf.get('file_type') == 'video/mp4'] or list(video_files)
 
-        if not mp4_files:
-            mp4_files = video_files
+        def short_side(vf):
+            return min(vf.get('width') or 0, vf.get('height') or 0)
 
-        # Sort by width (descending)
-        mp4_files.sort(key=lambda x: x.get('width', 0), reverse=True)
-
-        # Return first (best quality) file
-        return mp4_files[0] if mp4_files else {}
+        sufficient = [vf for vf in mp4_files if short_side(vf) >= self.TARGET_SHORT_SIDE]
+        if sufficient:
+            return min(sufficient, key=lambda vf: (short_side(vf), vf.get('width') or 0))
+        return max(mp4_files, key=lambda vf: (short_side(vf), vf.get('width') or 0))
 
     def _select_preview_quality(self, video_files: List[Dict]) -> Dict:
         """Select a lighter MP4 variant for UI preview cards.
@@ -163,7 +190,8 @@ class VideoSearcher:
 
     def search(self, keywords: List[str], min_duration: float = 5.0,
                max_results: int = 20,
-               orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[VideoInfo]:
+               orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any',
+               page: int = 1) -> List[VideoInfo]:
         """Search for videos matching keywords.
 
         Args:
@@ -171,6 +199,7 @@ class VideoSearcher:
             min_duration: Minimum video duration in seconds
             max_results: Maximum number of results to return
             orientation: Filter by orientation ('landscape', 'portrait', 'square', or 'any')
+            page: Result page (1-based) of the Pexels search
 
         Returns:
             List of VideoInfo objects
@@ -187,7 +216,7 @@ class VideoSearcher:
         params = {
             'query': query,
             'per_page': per_page,
-            'page': 1,
+            'page': max(1, int(page or 1)),
             'orientation': orientation if orientation in ['landscape', 'portrait', 'square'] else None
         }
 
@@ -235,17 +264,7 @@ class VideoSearcher:
         Raises:
             requests.RequestException: If download fails
         """
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        response = requests.get(video_info.download_url, stream=True, timeout=30)
-        response.raise_for_status()
-
-        with open(output_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    f.write(chunk)
-
+        download_file(video_info.download_url, output_path, chunk_size=max(chunk_size, 65536))
         return output_path
 
     def search_and_download(self, keywords: List[str], output_dir: Path,
@@ -320,6 +339,25 @@ class VideoSearcher:
             return False
 
 
+def cached_results(raw, max_results: int) -> Optional[list]:
+    """Cached result list if it can answer a request for ``max_results``, else None.
+
+    Entries are stored as {"limit": n, "items": [...]}. An entry made for a
+    smaller request is only reused if it holds fewer items than its limit
+    (the source had no more). Legacy bare lists are reused when long enough.
+    """
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        items = data.get('items') or []
+        limit = int(data.get('limit') or 0)
+        if limit >= max_results or len(items) < limit:
+            return items
+        return None
+    if isinstance(data, list) and len(data) >= max_results:
+        return data
+    return None
+
+
 class CachedVideoSearcher(VideoSearcher):
     """VideoSearcher with Redis-backed result caching."""
 
@@ -331,33 +369,39 @@ class CachedVideoSearcher(VideoSearcher):
         self._cache_misses = 0
 
     @staticmethod
-    def _cache_key(keywords: List[str], orientation: str) -> str:
-        """Build deterministic cache key from sorted keywords + orientation."""
+    def _cache_key(keywords: List[str], orientation: str, page: int = 1) -> str:
+        """Build deterministic cache key from sorted keywords + orientation (+ page)."""
         normalized = "|".join(sorted(k.lower().strip() for k in keywords))
         raw = f"pexels:{orientation}:{normalized}"
+        if page and int(page) > 1:
+            raw += f":page={int(page)}"
         return f"pexels_cache:{hashlib.md5(raw.encode()).hexdigest()}"
 
     def search(self, keywords: List[str], min_duration: float = 5.0,
                max_results: int = 20,
-               orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[VideoInfo]:
+               orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any',
+               page: int = 1) -> List[VideoInfo]:
         """Search with Redis cache layer."""
+        key = self._cache_key(keywords, orientation or 'any', page)
         if self._redis:
-            key = self._cache_key(keywords, orientation or 'any')
             try:
                 cached = self._redis.get(key)
-                if cached:
+                hit = cached_results(cached, max_results) if cached else None
+                if hit is not None:
                     self._cache_hits += 1
-                    data_list = json.loads(cached)
-                    return [VideoInfo(d) for d in data_list][:max_results]
+                    videos = [VideoInfo(d) for d in hit]
+                    return [v for v in videos if v.duration >= min_duration][:max_results]
             except Exception:
                 pass  # cache read failure is non-fatal
 
         self._cache_misses += 1
-        videos = super().search(keywords, min_duration, max_results, orientation)
+        if page and int(page) > 1:
+            videos = super().search(keywords, min_duration, max_results, orientation, page=page)
+        else:
+            videos = super().search(keywords, min_duration, max_results, orientation)
 
         # Store raw API data in cache for reconstruction
         if self._redis and videos:
-            key = self._cache_key(keywords, orientation or 'any')
             try:
                 # Store enough data to reconstruct VideoInfo objects
                 serializable = []
@@ -372,7 +416,8 @@ class CachedVideoSearcher(VideoSearcher):
                             {'link': v.preview_url, 'width': 960, 'height': 540, 'file_type': 'video/mp4'},
                         ],
                     })
-                self._redis.setex(key, self._cache_ttl, json.dumps(serializable))
+                self._redis.setex(key, self._cache_ttl,
+                                  json.dumps({'limit': max_results, 'items': serializable}))
             except Exception:
                 pass  # cache write failure is non-fatal
 

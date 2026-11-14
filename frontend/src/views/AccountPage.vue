@@ -91,7 +91,7 @@ onMounted(async () => {
   gap: 24px;
   margin-bottom: 24px;
   padding: 20px;
-  background: rgba(167, 139, 250, 0.05);
+  background: rgba(62, 230, 168, 0.05);
   border-radius: var(--ce-radius-sm);
   border: 1px solid var(--ce-border-subtle);
 }

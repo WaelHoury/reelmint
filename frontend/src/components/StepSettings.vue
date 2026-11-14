@@ -711,7 +711,7 @@ async function handleSubmit() {
 
 .voice-loading-spinner {
   font-size: 22px;
-  color: var(--ce-purple-light);
+  color: var(--ce-accent-light);
   flex-shrink: 0;
 }
 
@@ -764,9 +764,9 @@ async function handleSubmit() {
 }
 
 .fish-voice-card.selected {
-  border-color: var(--ce-purple-light);
-  box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.28);
-  background: rgba(167, 139, 250, 0.08);
+  border-color: var(--ce-accent-light);
+  box-shadow: 0 0 0 1px rgba(62, 230, 168, 0.28);
+  background: rgba(62, 230, 168, 0.08);
 }
 
 .fish-voice-card.loading {
@@ -802,8 +802,8 @@ async function handleSubmit() {
   align-items: center;
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(167, 139, 250, 0.12);
-  color: var(--ce-purple-light);
+  background: rgba(62, 230, 168, 0.12);
+  color: var(--ce-accent-light);
   font-size: 11px;
   font-weight: 600;
 }
@@ -868,7 +868,7 @@ async function handleSubmit() {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: rgba(15, 23, 42, 0.72);
+  background: rgba(0, 0, 0, 0.75);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -885,7 +885,7 @@ async function handleSubmit() {
 }
 
 .fish-selected-label {
-  color: var(--ce-purple-light);
+  color: var(--ce-accent-light);
 }
 
 .fish-select-label {
@@ -918,8 +918,8 @@ async function handleSubmit() {
 }
 
 .voice-option.selected {
-  border-color: var(--ce-purple-light);
-  background: rgba(167, 139, 250, 0.08);
+  border-color: var(--ce-accent-light);
+  background: rgba(62, 230, 168, 0.08);
 }
 
 .voice-option.cloned {
@@ -958,8 +958,8 @@ async function handleSubmit() {
 }
 
 .voice-preview-btn:hover {
-  color: var(--ce-purple-light);
-  background: rgba(167, 139, 250, 0.12);
+  color: var(--ce-accent-light);
+  background: rgba(62, 230, 168, 0.12);
 }
 
 .voice-create-link {
@@ -975,7 +975,7 @@ async function handleSubmit() {
 
 .voice-create-link a {
   font-size: 13px;
-  color: var(--ce-purple-light);
+  color: var(--ce-accent-light);
   text-decoration: none;
 }
 

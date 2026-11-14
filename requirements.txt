@@ -34,6 +34,7 @@ python-dotenv
 python-multipart  # Required for FastAPI file uploads
 tqdm
 slowapi
+tzdata  # time zone data for zoneinfo (YouTube quota reset = midnight Pacific) on Windows/slim images
 
 # Database
 alembic

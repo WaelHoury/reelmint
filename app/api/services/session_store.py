@@ -80,6 +80,9 @@ class VideoSession:
     trimmed_clip_paths: Optional[List[str]] = None
     clip_duration: Optional[float] = None
     transition_duration: Optional[float] = None
+    # What the first render actually used (final clip list incl. loop copy /
+    # outro, transition type, outro + fade durations, resolved subtitle style)
+    render_info: Optional[Dict[str, Any]] = None
     project_dir_path: Optional[str] = None
 
     # Auth

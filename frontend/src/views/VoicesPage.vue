@@ -365,7 +365,7 @@ async function handleDelete(voice) {
     await ElMessageBox.confirm(
       `Delete voice "${voice.title}"? This cannot be undone.`,
       'Delete Voice',
-      { confirmButtonText: 'Delete', type: 'warning' }
+      { confirmButtonText: 'Delete', type: 'warning', confirmButtonClass: 'el-button--danger' }
     )
     await deleteFishVoice(voice.id)
     voices.value = voices.value.filter((v) => v.id !== voice.id)
@@ -518,7 +518,7 @@ function formatTime(seconds) {
               <el-progress
                 :percentage="(recordingTime / maxRecordingTime) * 100"
                 :show-text="false"
-                color="#A78BFA"
+                color="#3EE6A8"
               />
               <button type="button" class="btn-secondary" @click="stopRecording">
                 <el-icon><VideoPause /></el-icon> Stop
@@ -700,7 +700,7 @@ function formatTime(seconds) {
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  background: rgba(15, 23, 42, 0.72);
+  background: rgba(0, 0, 0, 0.75);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -735,8 +735,8 @@ function formatTime(seconds) {
 }
 
 .btn-icon.active {
-  color: var(--ce-purple-light);
-  border-color: var(--ce-purple-light);
+  color: var(--ce-accent-light);
+  border-color: var(--ce-accent-light);
 }
 
 .btn-icon.danger:hover {

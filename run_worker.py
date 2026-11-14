@@ -26,7 +26,7 @@ from app.core.config import settings
 def main():
     print(f"""
 {'='*60}
-AI Video Maker - RQ Worker
+Reelmint - RQ Worker
 {'='*60}
 
 Connecting to Redis: {settings.redis_url}
@@ -40,7 +40,10 @@ Waiting for jobs...
     redis_conn = Redis.from_url(settings.redis_url)
     video_queue = Queue('video_generation', connection=redis_conn)
     worker = Worker([video_queue], connection=redis_conn)
-    worker.work()
+    # with_scheduler=True is required for hands-off batches: the batch runner
+    # re-queues itself with queue.enqueue_in() to wake up for retries, which
+    # only runs if an RQ scheduler is active for this queue.
+    worker.work(with_scheduler=True)
 
 
 if __name__ == "__main__":

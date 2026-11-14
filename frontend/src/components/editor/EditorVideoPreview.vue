@@ -146,8 +146,9 @@ defineExpose({ seekTo })
 .preview-video {
   max-width: 100%;
   max-height: calc(100vh - 48px - 230px - 32px);
-  border-radius: 4px;
-  background: #000;
+  border-radius: var(--ce-radius-xs);
+  background: var(--ce-bg-base);
+  box-shadow: 0 0 0 1px var(--ce-border-subtle), var(--ce-shadow-card);
 }
 
 .subtitle-overlay {
@@ -164,8 +165,9 @@ defineExpose({ seekTo })
   top: -18px;
   right: 0;
   font-size: 10px;
-  color: #aaa;
-  background: rgba(0, 0, 0, 0.6);
+  color: var(--ce-text-secondary);
+  background: var(--ce-surface-2);
+  border: 1px solid var(--ce-border-subtle);
   padding: 1px 6px;
   border-radius: 3px;
   pointer-events: none;

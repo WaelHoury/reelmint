@@ -27,7 +27,7 @@ from app.core.config import settings
 def main():
     print(f"""
 {'='*60}
-AI Video Maker - Publish Worker
+Reelmint - Publish Worker
 {'='*60}
 
 Connecting to Redis: {settings.redis_url}

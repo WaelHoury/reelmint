@@ -178,8 +178,9 @@ export function renderVideoChanges(videoId, payload) {
   return api.put(`/videos/${videoId}/editor/render`, payload)
 }
 
-export function searchReplacementClips(keywords, orientation = 'landscape', count = 6) {
-  return api.post('/editor/search-clips', { keywords, orientation, count })
+// extra: { min_duration, exclude: [{ video_id, provider }], topic }
+export function searchReplacementClips(keywords, orientation = 'landscape', count = 6, extra = {}) {
+  return api.post('/editor/search-clips', { keywords, orientation, count, ...extra })
 }
 
 export function getSessionPreviewStreamUrl(sessionId) {
@@ -218,6 +219,59 @@ export function getPublishJob(jobId) {
 
 export function retryPublishJob(jobId) {
   return api.post(`/publish/jobs/${jobId}/retry`)
+}
+
+// === Batches (Autopilot) ===
+
+export function listBatches() {
+  return api.get('/batches')
+}
+
+export function createBatch(payload) {
+  return api.post('/batches', payload)
+}
+
+// Ask the AI for video topics in a niche. Returns { topics: string[] }.
+export function suggestBatchTopics({ niche, count, style } = {}) {
+  const body = { niche, count }
+  if (style) body.style = style
+  return api.post('/batches/suggest-topics', body)
+}
+
+export function getBatch(batchId) {
+  return api.get(`/batches/${batchId}`)
+}
+
+export function startBatch(batchId) {
+  return api.post(`/batches/${batchId}/start`)
+}
+
+export function pauseBatch(batchId) {
+  return api.post(`/batches/${batchId}/pause`)
+}
+
+export function cancelBatch(batchId) {
+  return api.post(`/batches/${batchId}/cancel`)
+}
+
+export function deleteBatch(batchId) {
+  return api.delete(`/batches/${batchId}`)
+}
+
+export function addBatchItems(batchId, items) {
+  return api.post(`/batches/${batchId}/items`, { items })
+}
+
+export function retryBatchItem(batchId, itemId) {
+  return api.post(`/batches/${batchId}/items/${itemId}/retry`)
+}
+
+export function deleteBatchItem(batchId, itemId) {
+  return api.delete(`/batches/${batchId}/items/${itemId}`)
+}
+
+export function getYoutubeUploadQuota() {
+  return api.get('/batches/youtube-quota')
 }
 
 export default api

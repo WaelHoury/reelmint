@@ -59,7 +59,7 @@
               :label="clip.keywords?.join(', ') || `Clip ${clip.index + 1}`"
               :zoom="zoom"
               :selected="selected?.type === 'clip' && selected?.index === clip.index"
-              color="#A78BFA"
+              color="var(--ce-track-video)"
               :trimmable="true"
               :trim-start="clip.trim_start || 0"
               :trim-end="clip.trim_end || 0"
@@ -77,7 +77,7 @@
               label="Narration"
               :zoom="zoom"
               :selected="selected?.type === 'audio'"
-              color="#67c23a"
+              color="var(--ce-track-audio)"
               @click="$emit('select', { type: 'audio' })"
             />
           </div>
@@ -90,7 +90,7 @@
               label="Background Music"
               :zoom="zoom"
               :selected="selected?.type === 'music'"
-              color="#e6a23c"
+              color="var(--ce-track-music)"
               @click="$emit('select', { type: 'music' })"
             />
           </div>
@@ -105,7 +105,7 @@
               :label="sub.text"
               :zoom="zoom"
               :selected="selected?.type === 'subtitle' && selected?.index === sub.index"
-              color="#b86bff"
+              color="var(--ce-track-subtitle)"
               compact
               @click="$emit('select', { type: 'subtitle', index: sub.index })"
             />
@@ -153,7 +153,8 @@ const playheadStyle = computed(() => {
     top: '0',
     bottom: '0',
     width: '2px',
-    background: '#ff4757',
+    background: 'var(--ce-playhead)',
+    boxShadow: '0 0 6px color-mix(in srgb, var(--ce-playhead) 55%, transparent)',
     zIndex: 50,
     cursor: 'col-resize',
     pointerEvents: 'auto',
@@ -233,7 +234,12 @@ function drawRuler() {
   canvas.width = width
 
   ctx.clearRect(0, 0, width, 24)
-  ctx.fillStyle = '#4a4a6a'
+  // Colours come from theme tokens so the canvas matches the rest of the UI
+  const css = getComputedStyle(canvas)
+  const token = (name, fallback) => css.getPropertyValue(name).trim() || fallback
+  const tickMinor = token('--ce-timeline-tick', 'rgba(255,255,255,0.16)')
+  const tickMajor = token('--ce-timeline-tick-major', 'rgba(255,255,255,0.32)')
+  ctx.fillStyle = token('--ce-timeline-tick-label', 'rgba(255,255,255,0.5)')
   ctx.font = '10px sans-serif'
 
   const pps = PIXELS_PER_SECOND * props.zoom
@@ -249,7 +255,7 @@ function drawRuler() {
   const totalSeconds = props.duration || 60
 
   // Minor ticks
-  ctx.strokeStyle = '#3a3a5a'
+  ctx.strokeStyle = tickMinor
   ctx.lineWidth = 1
   for (let t = 0; t <= totalSeconds; t += minorInterval) {
     const x = Math.round(t * pps) + 0.5
@@ -260,7 +266,7 @@ function drawRuler() {
   }
 
   // Major ticks + labels
-  ctx.strokeStyle = '#6a6a8a'
+  ctx.strokeStyle = tickMajor
   ctx.lineWidth = 1
   for (let t = 0; t <= totalSeconds; t += majorInterval) {
     const x = Math.round(t * pps) + 0.5
@@ -296,8 +302,8 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 0 12px;
-  background: #16162a;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--ce-surface-1);
+  border-bottom: 1px solid var(--ce-border-subtle);
   flex-shrink: 0;
 }
 
@@ -308,24 +314,19 @@ onMounted(() => {
 }
 
 .zoom-btn {
-  background: #2a2a4a !important;
-  border-color: #3a3a5a !important;
-  color: #b0b0d0 !important;
-}
-.zoom-btn:hover {
-  background: #3a3a5a !important;
-  color: #fff !important;
+  min-width: 26px;
 }
 
 .zoom-label {
   font-size: 11px;
-  color: #8a8aaa;
+  color: var(--ce-text-muted);
   min-width: 40px;
+  font-variant-numeric: tabular-nums;
 }
 
 .time-display {
   font-size: 12px;
-  color: #a0a0c0;
+  color: var(--ce-text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -339,13 +340,13 @@ onMounted(() => {
 .layer-labels {
   width: 80px;
   flex-shrink: 0;
-  background: #1a1a30;
-  border-right: 1px solid #2a2a4a;
+  background: var(--ce-surface-1);
+  border-right: 1px solid var(--ce-border-subtle);
 }
 
 .ruler-label {
   height: 24px;
-  border-bottom: 1px solid #2a2a4a;
+  border-bottom: 1px solid var(--ce-border-subtle);
 }
 
 .layer-label {
@@ -355,8 +356,8 @@ onMounted(() => {
   gap: 6px;
   padding: 0 10px;
   font-size: 11px;
-  color: #8a8aaa;
-  border-bottom: 1px solid #22223a;
+  color: var(--ce-text-label);
+  border-bottom: 1px solid var(--ce-border-subtle);
   white-space: nowrap;
   overflow: hidden;
   font-weight: 500;
@@ -383,8 +384,8 @@ onMounted(() => {
 /* Ruler */
 .ruler {
   height: 24px;
-  background: #1a1a30;
-  border-bottom: 1px solid #2a2a4a;
+  background: var(--ce-surface-1);
+  border-bottom: 1px solid var(--ce-border-subtle);
   cursor: pointer;
 }
 
@@ -392,15 +393,15 @@ onMounted(() => {
 .layer {
   height: 36px;
   position: relative;
-  border-bottom: 1px solid #22223a;
+  border-bottom: 1px solid var(--ce-border-subtle);
 }
 
 .layer:nth-child(odd) {
-  background: rgba(255, 255, 255, 0.01);
+  background: var(--ce-timeline-row-alt);
 }
 
 .layer:nth-child(even) {
-  background: rgba(0, 0, 0, 0.05);
+  background: transparent;
 }
 
 .subtitles-layer {
@@ -421,7 +422,7 @@ onMounted(() => {
   height: 0;
   border-left: 5px solid transparent;
   border-right: 5px solid transparent;
-  border-top: 6px solid #ff4757;
+  border-top: 6px solid var(--ce-playhead);
 }
 
 /* Wider invisible hit target for easier grabbing */

@@ -26,7 +26,8 @@ def _get_lock_redis() -> redis_lib.Redis:
 
 
 @contextmanager
-def project_lock(project_id: str, timeout: int = 300, blocking_timeout: int = 10):
+def project_lock(project_id: str, timeout: int = 300, blocking_timeout: int = 10,
+                 auto_renew: bool = True):
     """Acquire a Redis-based distributed lock for a project directory.
 
     Prevents concurrent editor operations (render, subtitle regen, audio remix)
@@ -34,12 +35,15 @@ def project_lock(project_id: str, timeout: int = 300, blocking_timeout: int = 10
 
     Args:
         project_id: Unique identifier for the project (video_id, session_id, or project dir name)
-        timeout: Auto-release lock after this many seconds (safety net)
+        timeout: Auto-release lock after this many seconds if the holder dies (safety net)
         blocking_timeout: Max seconds to wait for lock acquisition
+        auto_renew: Keep resetting the TTL while the block runs, so a render
+            longer than ``timeout`` doesn't lose the lock halfway through
 
     Raises:
         HTTPException(409) if lock cannot be acquired within blocking_timeout.
     """
+    import threading
     from fastapi import HTTPException
 
     r = _get_lock_redis()
@@ -50,13 +54,31 @@ def project_lock(project_id: str, timeout: int = 300, blocking_timeout: int = 10
             status_code=409,
             detail="Another edit operation is in progress for this video. Please wait and try again.",
         )
+
+    stop = threading.Event()
+    renewer = None
+    if auto_renew and timeout:
+        def _renew():
+            # Reset the TTL every third of it; stops once the block finishes
+            while not stop.wait(max(0.2, timeout / 3)):
+                try:
+                    lock.reacquire()
+                except Exception:
+                    return  # lost/expired: nothing more we can do here
+        renewer = threading.Thread(target=_renew, name=f"lock-renew:{project_id}", daemon=True)
+        renewer.start()
     try:
         yield
     finally:
+        stop.set()
+        if renewer is not None:
+            renewer.join(timeout=2)
         try:
             lock.release()
         except redis_lib.exceptions.LockNotOwnedError:
             pass  # Lock expired before release (timed out)
+        except redis_lib.exceptions.LockError:
+            pass
 
 
 def sanitize_filename(name: str, max_length: int = 100) -> str:
@@ -386,3 +408,28 @@ def validate_environment() -> Tuple[bool, list]:
         errors.append(f"Piper model not found at: {piper_model}")
 
     return (len(errors) == 0, errors)
+
+
+def derive_video_title(input_type: str, text: str, max_length: int = 80) -> str:
+    """Working title for a queued video: the topic itself, or the first words of a script.
+
+    Path separators and '..' are removed (the title ends up in file names).
+    """
+    text = re.sub(r"\s+", " ", (text or "")).strip()
+    if input_type == "script":
+        words = text.split(" ")
+        title = " ".join(words[:8])
+        if len(words) > 8:
+            title = title.rstrip(".,;:!?") + "…"
+    else:
+        title = text
+    title = title.replace("/", " ").replace("\\", " ").replace("\0", "")
+    while ".." in title:
+        title = title.replace("..", ".")
+    title = re.sub(r"\s+", " ", title).strip()
+    if len(title) > max_length:
+        cut = title[:max_length - 1]
+        if " " in cut[max_length // 2:]:
+            cut = cut[:cut.rfind(" ")]
+        title = cut.rstrip(" ,;:-") + "…"
+    return title or "Untitled video"

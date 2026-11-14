@@ -82,6 +82,9 @@ const steps = [
   { title: 'Generate', icon: 'VideoCamera' },
 ]
 
+// Once the video is done, show every step (including Generate) as finished
+const stepsActive = computed(() => (sessionData.value?.status === 'completed' ? steps.length : activeStep.value))
+
 const modeLabel = computed(() => props.mode === 'shorts' ? 'Short Form' : 'Long Form')
 
 function onSessionCreated(data) {
@@ -127,10 +130,10 @@ function onGenerationCompleted() {
       <span class="ce-label mode-badge">{{ modeLabel }}</span>
     </div>
 
-    <el-steps :active="activeStep" finish-status="success" align-center class="wizard-steps">
-      <el-step v-for="step in steps" :key="step.title" :title="step.title">
+    <el-steps :active="stepsActive" finish-status="success" align-center class="wizard-steps">
+      <el-step v-for="(step, i) in steps" :key="step.title" :title="step.title">
         <template #icon>
-          <el-icon><component :is="step.icon" /></el-icon>
+          <el-icon><Check v-if="i < stepsActive" /><component v-else :is="step.icon" /></el-icon>
         </template>
       </el-step>
     </el-steps>
@@ -187,8 +190,8 @@ function onGenerationCompleted() {
 }
 
 .mode-badge {
-  background: rgba(167, 139, 250, 0.1);
-  color: var(--ce-purple-light);
+  background: rgba(62, 230, 168, 0.1);
+  color: var(--ce-accent-light);
   padding: 4px 12px;
   border-radius: 20px;
   font-size: 11px;

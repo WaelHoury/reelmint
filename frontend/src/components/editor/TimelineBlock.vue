@@ -40,7 +40,8 @@ const props = defineProps({
   label: { type: String, default: '' },
   zoom: { type: Number, default: 1 },
   selected: { type: Boolean, default: false },
-  color: { type: String, default: '#A78BFA' },
+  // Any CSS colour, typically a theme token such as var(--ce-track-video)
+  color: { type: String, default: 'var(--ce-track-video)' },
   compact: { type: Boolean, default: false },
   trimmable: { type: Boolean, default: false },
   trimStart: { type: Number, default: 0 },
@@ -73,8 +74,11 @@ const blockStyle = computed(() => {
     : (props.end - props.start)
   const left = effectiveStart * pps
   const width = Math.max(4, effectiveDur * pps)
-  const alpha = props.selected ? '55' : '35'
-  const borderColor = props.selected ? props.color : `${props.color}88`
+  // Tints are mixed from the track colour so any token / CSS colour works
+  const fill = `color-mix(in srgb, ${props.color} ${props.selected ? 34 : 22}%, transparent)`
+  const borderColor = props.selected
+    ? 'var(--ce-selection)'
+    : `color-mix(in srgb, ${props.color} 55%, transparent)`
 
   return {
     position: 'absolute',
@@ -82,7 +86,7 @@ const blockStyle = computed(() => {
     width: `${width}px`,
     top: props.compact ? '4px' : '3px',
     height: props.compact ? '28px' : '30px',
-    backgroundColor: `${props.color}${alpha}`,
+    backgroundColor: fill,
     border: `1px solid ${borderColor}`,
     borderRadius: '4px',
     cursor: 'pointer',
@@ -142,18 +146,19 @@ function startTrim(side, event) {
 }
 
 .timeline-block:hover {
-  filter: brightness(1.15);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1);
+  filter: brightness(1.2);
 }
 
+/* Selected = mint outline + soft glow */
 .timeline-block.selected {
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3),
-              0 0 8px rgba(64, 158, 255, 0.2);
+  box-shadow: 0 0 0 1px var(--ce-selection),
+              0 0 10px color-mix(in srgb, var(--ce-selection) 35%, transparent);
+  z-index: 2;
 }
 
 .block-label {
   font-size: 10px;
-  color: #e0e0e0;
+  color: var(--ce-text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -192,23 +197,24 @@ function startTrim(side, event) {
 .trim-handle-left {
   left: -1px;
   border-radius: 4px 0 0 4px;
-  background: rgba(255, 255, 255, 0.2);
+  background: color-mix(in srgb, var(--ce-text-primary) 20%, transparent);
 }
 
 .trim-handle-right {
   right: -1px;
   border-radius: 0 4px 4px 0;
-  background: rgba(255, 255, 255, 0.2);
+  background: color-mix(in srgb, var(--ce-text-primary) 20%, transparent);
 }
 
 .trim-handle:hover {
-  background: rgba(255, 255, 255, 0.35);
+  background: color-mix(in srgb, var(--ce-selection) 45%, transparent);
 }
 
 .handle-grip {
   width: 2px;
   height: 14px;
-  background: rgba(255, 255, 255, 0.8);
+  background: var(--ce-text-primary);
+  opacity: 0.85;
   border-radius: 1px;
 }
 
@@ -218,8 +224,9 @@ function startTrim(side, event) {
   top: -22px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.85);
-  color: #fff;
+  background: var(--ce-surface-3);
+  border: 1px solid var(--ce-border-strong);
+  color: var(--ce-text-primary);
   font-size: 10px;
   padding: 2px 6px;
   border-radius: 3px;

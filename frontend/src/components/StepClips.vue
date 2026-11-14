@@ -166,7 +166,7 @@ async function handleConfirm() {
 
     <!-- Initial loading (before any clips exist) -->
     <div v-if="loading && clips.length === 0" class="loading-state">
-      <el-icon class="is-loading" :size="32" color="var(--ce-purple-light)"><Loading /></el-icon>
+      <el-icon class="is-loading" :size="32" color="var(--ce-accent-light)"><Loading /></el-icon>
       <p class="loading-text">Starting clip generation...</p>
     </div>
 
@@ -177,7 +177,7 @@ async function handleConfirm() {
         <el-progress
           :percentage="progressPercent"
           :stroke-width="8"
-          color="var(--ce-purple-light)"
+          color="var(--ce-accent-light)"
         />
         <p class="progress-text">
           Searching for videos... {{ completedClips }} / {{ totalClips }} clips found

@@ -39,7 +39,7 @@ async function handleDisconnect(account) {
     await ElMessageBox.confirm(
       `Disconnect ${account.display_name || account.provider}? You won't be able to publish to this account until you reconnect.`,
       'Disconnect Account',
-      { confirmButtonText: 'Disconnect', cancelButtonText: 'Cancel', type: 'warning' }
+      { confirmButtonText: 'Disconnect', cancelButtonText: 'Cancel', type: 'warning', confirmButtonClass: 'el-button--danger' }
     )
     await disconnectAccount(account.id)
     ElMessage.success('Account disconnected')

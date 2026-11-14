@@ -4,32 +4,59 @@
 
 /* --- CSS Custom Properties --- */
 :root {
+  /* Native controls (textarea resize grip, scrollbars, date pickers) render dark */
+  color-scheme: dark;
+
   /* Backgrounds */
   --ce-bg-base: #000000;
   --ce-bg-elevated: rgba(10, 10, 10, 0.7);
   --ce-bg-input: #050505;
   --ce-bg-card: rgba(10, 10, 10, 0.7);
   --ce-bg-sidebar: rgba(5, 5, 5, 0.85);
-  --ce-bg-hover: rgba(167, 139, 250, 0.08);
+  --ce-bg-hover: rgba(62, 230, 168, 0.08);
   --ce-bg-tag: #111111;
 
   /* Borders */
   --ce-border-subtle: rgba(255, 255, 255, 0.08);
-  --ce-border-input: #222222;
-  --ce-border-hover: rgba(167, 139, 250, 0.3);
+  --ce-border-input: #2a2a2a;
+  --ce-border-control: rgba(255, 255, 255, 0.14);
+  --ce-border-hover: rgba(62, 230, 168, 0.3);
 
-  /* Accent / Purple */
-  --ce-purple-light: #A78BFA;
-  --ce-purple-dark: #6D28D9;
-  --ce-purple-mid: #7C3AED;
-  --ce-purple-glow: rgba(167, 139, 250, 0.10);
-  --ce-purple-gradient: linear-gradient(135deg, #6D28D9 0%, #A78BFA 100%);
+  /* Accent (Reelmint mint / teal) */
+  --ce-accent-light: #3EE6A8;
+  --ce-accent-dark: #0E8C84;
+  --ce-accent-mid: #12B3A8;
+  --ce-accent-ink: #04241D;            /* text on mint surfaces */
+  --ce-accent-glow: rgba(62, 230, 168, 0.10);
+  --ce-accent-gradient: linear-gradient(135deg, #3EE6A8 0%, #12B3A8 100%);
+  --ce-accent-gradient-hover: linear-gradient(135deg, #63F0BE 0%, #1BC6BA 100%);
+  --ce-focus-ring: 0 0 0 3px rgba(62, 230, 168, 0.35);
+
+  /* Solid surfaces (darkest -> lightest), shared by pages, panels, dialogs, editor */
+  --ce-surface-1: #0a0a0a;   /* panels, dialogs, popovers */
+  --ce-surface-2: #111111;   /* toolbars, raised strips, hover rows */
+  --ce-surface-3: #1a1a1a;   /* pressed / active controls */
+  --ce-border-strong: #333333;
+
+  /* Video editor: timeline */
+  --ce-timeline-bg: #050505;
+  --ce-timeline-row-alt: rgba(255, 255, 255, 0.015);
+  --ce-timeline-tick: rgba(255, 255, 255, 0.16);
+  --ce-timeline-tick-major: rgba(255, 255, 255, 0.32);
+  --ce-timeline-tick-label: rgba(255, 255, 255, 0.5);
+  --ce-playhead: #3EE6A8;
+  --ce-selection: #3EE6A8;
+  /* Track tints: brand mint / teal, one warm accent, one neutral */
+  --ce-track-video: #3EE6A8;
+  --ce-track-audio: #12B3A8;
+  --ce-track-music: #E3B341;
+  --ce-track-subtitle: #9AA8A4;
 
   /* Text */
   --ce-text-primary: #FFFFFF;
   --ce-text-secondary: rgba(255, 255, 255, 0.7);
-  --ce-text-muted: rgba(255, 255, 255, 0.4);
-  --ce-text-label: rgba(255, 255, 255, 0.5);
+  --ce-text-muted: rgba(255, 255, 255, 0.5);   /* ~5.3:1 on black */
+  --ce-text-label: rgba(255, 255, 255, 0.6);
 
   /* Typography */
   --ce-font-family: 'Inter', system-ui, -apple-system, sans-serif;
@@ -42,8 +69,8 @@
 
   /* Shadows */
   --ce-shadow-card: 0 8px 32px rgba(0, 0, 0, 0.4);
-  --ce-shadow-glow: 0 10px 40px rgba(109, 40, 217, 0.3);
-  --ce-shadow-glow-hover: 0 15px 50px rgba(109, 40, 217, 0.45);
+  --ce-shadow-glow: 0 10px 40px rgba(14, 140, 132, 0.3);
+  --ce-shadow-glow-hover: 0 15px 50px rgba(14, 140, 132, 0.45);
   --ce-shadow-input-inset: inset 0 2px 8px rgba(0, 0, 0, 0.4);
 
   /* Transitions */
@@ -72,12 +99,12 @@ body {
   overflow-x: hidden;
 }
 
-/* Ambient purple glow */
+/* Ambient mint glow */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
-  background: radial-gradient(ellipse 80% 50% at 50% 0%, var(--ce-purple-glow) 0%, transparent 70%);
+  background: radial-gradient(ellipse 80% 50% at 50% 0%, var(--ce-accent-glow) 0%, transparent 70%);
   pointer-events: none;
   z-index: 0;
 }
@@ -128,33 +155,41 @@ body::after {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  background: var(--ce-purple-gradient);
+  background: var(--ce-accent-gradient);
   border: none;
-  color: #fff;
+  color: var(--ce-accent-ink);
   font-family: var(--ce-font-family);
   font-size: 14px;
-  font-weight: 600;
-  letter-spacing: 0.5px;
+  font-weight: 650;
+  letter-spacing: 0.2px;
   border-radius: var(--ce-radius-sm);
   padding: 14px 28px;
   cursor: pointer;
   position: relative;
   overflow: hidden;
-  box-shadow: 0 8px 24px -4px rgba(167, 139, 250, 0.4);
-  transition: transform var(--ce-transition-fast), box-shadow var(--ce-transition-fast);
+  box-shadow: 0 8px 24px -8px rgba(62, 230, 168, 0.5);
+  transition: transform var(--ce-transition-fast), box-shadow var(--ce-transition-fast), background var(--ce-transition-fast);
 }
 
-.btn-primary-glow:hover {
+.btn-primary-glow:hover:not(:disabled) {
+  background: var(--ce-accent-gradient-hover);
   transform: translateY(-1px);
-  box-shadow: 0 12px 32px -4px rgba(167, 139, 250, 0.55);
+  box-shadow: 0 12px 30px -8px rgba(62, 230, 168, 0.6);
 }
 
-.btn-primary-glow:active {
+.btn-primary-glow:active:not(:disabled) {
   transform: translateY(0);
 }
 
+.btn-primary-glow:focus-visible {
+  outline: none;
+  box-shadow: var(--ce-focus-ring), 0 8px 24px -8px rgba(62, 230, 168, 0.5);
+}
+
 .btn-primary-glow:disabled {
-  opacity: 0.5;
+  background: #161616;
+  color: rgba(255, 255, 255, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
   cursor: not-allowed;
   transform: none;
 }
@@ -167,11 +202,12 @@ body::after {
   left: -100%;
   width: 100%;
   height: 100%;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.15), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.25), transparent);
   transition: left 0.5s ease;
+  pointer-events: none;
 }
 
-.btn-primary-glow:hover::after {
+.btn-primary-glow:hover:not(:disabled)::after {
   left: 100%;
 }
 
@@ -182,7 +218,7 @@ body::after {
   justify-content: center;
   gap: 8px;
   background: transparent;
-  border: 1px solid var(--ce-border-input);
+  border: 1px solid var(--ce-border-control);
   color: var(--ce-text-secondary);
   font-family: var(--ce-font-family);
   font-size: 14px;
@@ -190,12 +226,31 @@ body::after {
   border-radius: var(--ce-radius-sm);
   padding: 12px 24px;
   cursor: pointer;
-  transition: border-color var(--ce-transition-fast), color var(--ce-transition-fast);
+  transition: border-color var(--ce-transition-fast), color var(--ce-transition-fast), background var(--ce-transition-fast);
 }
 
-.btn-secondary:hover {
-  border-color: var(--ce-purple-light);
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--ce-accent-light);
   color: var(--ce-text-primary);
+  background: rgba(62, 230, 168, 0.06);
+}
+
+.btn-secondary:focus-visible {
+  outline: none;
+  box-shadow: var(--ce-focus-ring);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Generic keyboard focus ring for custom buttons / clickable cards */
+button:focus-visible,
+[role="button"]:focus-visible,
+a:focus-visible {
+  outline: 2px solid rgba(62, 230, 168, 0.6);
+  outline-offset: 2px;
 }
 
 /* --- Tags --- */
@@ -213,7 +268,7 @@ body::after {
 }
 
 .ce-tag:hover {
-  border-color: var(--ce-purple-light);
+  border-color: var(--ce-accent-light);
   color: var(--ce-text-primary);
 }
 
@@ -228,7 +283,7 @@ body::after {
 
 /* --- Gradient Text --- */
 .ce-gradient-text {
-  background: var(--ce-purple-gradient);
+  background: var(--ce-accent-gradient);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -260,7 +315,8 @@ body::after {
    ELEMENT PLUS DARK OVERRIDES
    =========================== */
 
-:root {
+html.dark:root,
+:root:root {
   /* Core colors */
   --el-bg-color: #0a0a0a;
   --el-bg-color-overlay: #111111;
@@ -270,7 +326,7 @@ body::after {
   --el-text-color-primary: #ffffff;
   --el-text-color-regular: rgba(255, 255, 255, 0.7);
   --el-text-color-secondary: rgba(255, 255, 255, 0.5);
-  --el-text-color-placeholder: rgba(255, 255, 255, 0.3);
+  --el-text-color-placeholder: rgba(255, 255, 255, 0.38);
   --el-text-color-disabled: rgba(255, 255, 255, 0.2);
 
   /* Borders */
@@ -286,42 +342,59 @@ body::after {
   --el-fill-color-extra-light: #080808;
   --el-fill-color-blank: #050505;
 
-  /* Primary (purple) */
-  --el-color-primary: #A78BFA;
-  --el-color-primary-light-3: #8B6FDE;
-  --el-color-primary-light-5: #c4b5fd;
-  --el-color-primary-light-7: #ddd6fe;
-  --el-color-primary-light-8: #ede9fe;
-  --el-color-primary-light-9: #f5f3ff;
-  --el-color-primary-dark-2: #6D28D9;
+  /* Primary (mint) */
+  --el-color-primary: #3EE6A8;
+  --el-color-primary-light-3: #2EA479;
+  --el-color-primary-light-5: #247859;
+  --el-color-primary-light-7: #1A4C39;
+  --el-color-primary-light-8: #14362A;
+  --el-color-primary-light-9: #0F201A;
+  --el-color-primary-dark-2: #65EBB9;
 
-  /* Success */
+  /* Status colors. light-N are DARK tints in dark mode (Element uses light-9/8 as
+     ElMessage / alert / tag backgrounds, so light values here = white boxes). */
   --el-color-success: #4ade80;
-  --el-color-success-light-3: #86efac;
-  --el-color-success-light-5: #bbf7d0;
-  --el-color-success-light-9: #f0fdf4;
-  --el-color-success-dark-2: #16a34a;
+  --el-color-success-light-3: #379E5D;
+  --el-color-success-light-5: #2A7445;
+  --el-color-success-light-7: #1D4A2D;
+  --el-color-success-light-8: #173422;
+  --el-color-success-light-9: #101F16;
+  --el-color-success-dark-2: #6EE79A;
 
-  /* Warning */
   --el-color-warning: #fbbf24;
-  --el-color-warning-light-3: #fcd34d;
-  --el-color-warning-light-5: #fde68a;
-  --el-color-warning-light-9: #fefce8;
-  --el-color-warning-dark-2: #d97706;
+  --el-color-warning-light-3: #B3891C;
+  --el-color-warning-light-5: #826417;
+  --el-color-warning-light-7: #524012;
+  --el-color-warning-light-8: #3A2E0F;
+  --el-color-warning-light-9: #221C0D;
+  --el-color-warning-dark-2: #FCCB50;
 
-  /* Danger */
   --el-color-danger: #f87171;
-  --el-color-danger-light-3: #fca5a5;
-  --el-color-danger-light-5: #fecaca;
-  --el-color-danger-light-9: #fef2f2;
-  --el-color-danger-dark-2: #dc2626;
+  --el-color-danger-light-3: #B15252;
+  --el-color-danger-light-5: #813E3E;
+  --el-color-danger-light-7: #512929;
+  --el-color-danger-light-8: #3A1F1F;
+  --el-color-danger-light-9: #221414;
+  --el-color-danger-dark-2: #F98D8D;
 
-  /* Info */
+  --el-color-error: #f87171;
+  --el-color-error-light-3: #B15252;
+  --el-color-error-light-5: #813E3E;
+  --el-color-error-light-7: #512929;
+  --el-color-error-light-8: #3A1F1F;
+  --el-color-error-light-9: #221414;
+  --el-color-error-dark-2: #F98D8D;
+
   --el-color-info: #9ca3af;
-  --el-color-info-light-3: #d1d5db;
-  --el-color-info-light-5: #e5e7eb;
-  --el-color-info-light-9: #f3f4f6;
-  --el-color-info-dark-2: #6b7280;
+  --el-color-info-light-3: #70757D;
+  --el-color-info-light-5: #53565C;
+  --el-color-info-light-7: #36383C;
+  --el-color-info-light-8: #27292B;
+  --el-color-info-light-9: #19191A;
+  --el-color-info-dark-2: #B0B5BF;
+
+  --el-color-white: #ffffff;
+  --el-color-black: #000000;
 
   /* Overlay */
   --el-mask-color: rgba(0, 0, 0, 0.7);
@@ -338,64 +411,75 @@ body::after {
 }
 
 
-/* --- Input/Textarea --- */
-.el-input__wrapper {
+/* --- Input/Textarea/Select: one dark field style --- */
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner {
   background-color: var(--ce-bg-input) !important;
-  box-shadow: var(--ce-shadow-input-inset) !important;
+  box-shadow: inset 0 0 0 1px var(--ce-border-input), var(--ce-shadow-input-inset) !important;
   border-radius: var(--ce-radius-sm) !important;
+  transition: box-shadow var(--ce-transition-fast) !important;
 }
 
-.el-input__wrapper:hover {
-  box-shadow: var(--ce-shadow-input-inset), 0 0 0 1px rgba(255, 255, 255, 0.06) !important;
+.el-input__wrapper:hover,
+.el-select__wrapper:hover,
+.el-textarea__inner:hover {
+  box-shadow: inset 0 0 0 1px #3a3a3a, var(--ce-shadow-input-inset) !important;
 }
 
-.el-input__wrapper.is-focus {
-  box-shadow: var(--ce-shadow-input-inset), 0 0 0 2px rgba(167, 139, 250, 0.25) !important;
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-select__wrapper.is-focus,
+.el-textarea__inner:focus {
+  box-shadow: inset 0 0 0 1px var(--ce-accent-light), 0 0 0 3px rgba(62, 230, 168, 0.18) !important;
+}
+
+.el-input.is-disabled .el-input__wrapper,
+.el-select__wrapper.is-disabled {
+  background-color: #0c0c0c !important;
+  box-shadow: inset 0 0 0 1px #1c1c1c !important;
+}
+
+.el-input.is-error .el-input__wrapper,
+.el-form-item.is-error .el-input__wrapper,
+.el-form-item.is-error .el-textarea__inner,
+.el-form-item.is-error .el-select__wrapper {
+  box-shadow: inset 0 0 0 1px #f87171 !important;
 }
 
 .el-textarea__inner {
-  background-color: var(--ce-bg-input) !important;
-  box-shadow: var(--ce-shadow-input-inset) !important;
-  border-color: var(--ce-border-input) !important;
-  border-radius: var(--ce-radius-sm) !important;
+  border: none !important;
   color: var(--ce-text-primary) !important;
-}
-
-.el-textarea__inner:focus {
-  border-color: var(--ce-purple-light) !important;
-  box-shadow: var(--ce-shadow-input-inset), 0 0 0 2px rgba(167, 139, 250, 0.25) !important;
 }
 
 .el-input__inner {
   color: var(--ce-text-primary) !important;
 }
 
-.el-input__count-inner {
+.el-input__count,
+.el-input__count-inner,
+.el-textarea .el-input__count {
   background: transparent !important;
-}
-
-/* --- Select --- */
-.el-select .el-input__wrapper,
-.el-select .el-select__wrapper {
-  background-color: var(--ce-bg-input) !important;
-}
-
-.el-select__wrapper {
-  background-color: var(--ce-bg-input) !important;
-  box-shadow: var(--ce-shadow-input-inset) !important;
-  border-radius: var(--ce-radius-sm) !important;
-}
-
-.el-select__wrapper.is-focused {
-  box-shadow: var(--ce-shadow-input-inset), 0 0 0 2px rgba(167, 139, 250, 0.25) !important;
-}
-
-.el-select__placeholder {
   color: var(--ce-text-muted) !important;
+}
+
+.el-select__placeholder.is-transparent,
+.el-select__placeholder:not(.is-transparent) {
+  color: var(--ce-text-primary) !important;
+}
+
+.el-select__placeholder.is-transparent {
+  color: var(--el-text-color-placeholder) !important;
 }
 
 .el-select__selected-item .el-select__tags-text {
   color: var(--ce-text-primary) !important;
+}
+
+.el-select__caret,
+.el-input__suffix,
+.el-input__prefix {
+  color: var(--ce-text-muted) !important;
 }
 
 /* --- Select Dropdown (popover) --- */
@@ -420,8 +504,22 @@ body::after {
 
 .el-select-dropdown__item.is-selected,
 .el-select-dropdown__item.selected {
-  color: var(--ce-purple-light) !important;
+  color: var(--ce-accent-light) !important;
   font-weight: 600 !important;
+  background-color: rgba(62, 230, 168, 0.08) !important;
+  box-shadow: inset 2px 0 0 var(--ce-accent-light);
+}
+
+.el-select-dropdown__item.is-disabled {
+  color: rgba(255, 255, 255, 0.25) !important;
+}
+
+.el-select-group__title {
+  color: var(--ce-text-muted) !important;
+}
+
+.el-select-dropdown__empty {
+  color: var(--ce-text-muted) !important;
 }
 
 /* --- Card --- */
@@ -447,83 +545,158 @@ body::after {
    BUTTONS — Comprehensive Overrides
    ================================= */
 
-/* All buttons: base dark style */
+/* All buttons: base = secondary (ghost) */
 .el-button {
   --el-button-bg-color: transparent;
-  --el-button-border-color: #333;
+  --el-button-border-color: var(--ce-border-control);
   --el-button-text-color: var(--ce-text-secondary);
-  --el-button-hover-bg-color: var(--ce-bg-hover);
-  --el-button-hover-border-color: var(--ce-purple-light);
+  --el-button-hover-bg-color: rgba(62, 230, 168, 0.06);
+  --el-button-hover-border-color: var(--ce-accent-light);
   --el-button-hover-text-color: #fff;
-  --el-button-active-bg-color: rgba(167, 139, 250, 0.12);
-  --el-button-active-border-color: var(--ce-purple-dark);
+  --el-button-active-bg-color: rgba(62, 230, 168, 0.12);
+  --el-button-active-border-color: var(--ce-accent-light);
   --el-button-active-text-color: #fff;
   --el-button-disabled-bg-color: transparent;
-  --el-button-disabled-border-color: #222;
-  --el-button-disabled-text-color: rgba(255, 255, 255, 0.2);
+  --el-button-disabled-border-color: rgba(255, 255, 255, 0.08);
+  --el-button-disabled-text-color: rgba(255, 255, 255, 0.3);
+  --el-button-outline-color: rgba(62, 230, 168, 0.55);
+  font-weight: 500;
 }
 
-/* Primary button: purple gradient feel */
+.el-button:focus-visible {
+  outline: 2px solid rgba(62, 230, 168, 0.6) !important;
+  outline-offset: 2px;
+}
+
+/* Icon + bare text inside a button: Element only spaces icon + <span>, and the
+   inline-flex label span swallows the whitespace, so give it a real gap instead. */
+.el-button > span {
+  gap: 6px;
+}
+
+.el-button > span > [class*='el-icon'] + span,
+.el-button > span > .el-icon--right,
+.el-button > span > .el-icon--left {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* Primary: mint -> teal gradient, dark ink text (>= 8:1 contrast) */
 .el-button--primary {
-  --el-button-bg-color: #6D28D9 !important;
-  --el-button-border-color: #6D28D9 !important;
-  --el-button-text-color: #fff !important;
-  --el-button-hover-bg-color: #7C3AED !important;
-  --el-button-hover-border-color: #7C3AED !important;
-  --el-button-hover-text-color: #fff !important;
-  --el-button-active-bg-color: #5B21B6 !important;
-  --el-button-active-border-color: #5B21B6 !important;
-  --el-button-disabled-bg-color: rgba(109, 40, 217, 0.4) !important;
-  --el-button-disabled-border-color: rgba(109, 40, 217, 0.4) !important;
+  --el-button-bg-color: #2BD3A3 !important;
+  --el-button-border-color: transparent !important;
+  --el-button-text-color: var(--ce-accent-ink) !important;
+  --el-button-hover-bg-color: #3EE6A8 !important;
+  --el-button-hover-border-color: transparent !important;
+  --el-button-hover-text-color: var(--ce-accent-ink) !important;
+  --el-button-active-bg-color: #12B3A8 !important;
+  --el-button-active-border-color: transparent !important;
+  --el-button-active-text-color: var(--ce-accent-ink) !important;
+  --el-button-disabled-bg-color: #161616 !important;
+  --el-button-disabled-border-color: rgba(255, 255, 255, 0.08) !important;
+  --el-button-disabled-text-color: rgba(255, 255, 255, 0.35) !important;
+}
+
+.el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(.el-button--danger) {
+  background-image: var(--ce-accent-gradient);
+  font-weight: 600;
+}
+
+.el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(.el-button--danger):hover,
+.el-button--primary:not(.is-plain):not(.is-text):not(.is-link):not(.el-button--danger):focus-visible {
+  background-image: var(--ce-accent-gradient-hover);
+  box-shadow: 0 6px 18px -8px rgba(62, 230, 168, 0.6);
+}
+
+.el-button--primary.is-disabled:not(.is-plain),
+.el-button--primary.is-disabled:not(.is-plain):hover {
+  background-image: none !important;
+  box-shadow: none !important;
 }
 
 /* Primary plain (outline) */
 .el-button--primary.is-plain {
-  --el-button-bg-color: rgba(109, 40, 217, 0.1) !important;
-  --el-button-border-color: rgba(167, 139, 250, 0.4) !important;
-  --el-button-text-color: var(--ce-purple-light) !important;
-  --el-button-hover-bg-color: rgba(109, 40, 217, 0.2) !important;
-  --el-button-hover-border-color: var(--ce-purple-light) !important;
+  --el-button-bg-color: rgba(62, 230, 168, 0.08) !important;
+  --el-button-border-color: rgba(62, 230, 168, 0.4) !important;
+  --el-button-text-color: var(--ce-accent-light) !important;
+  --el-button-hover-bg-color: rgba(62, 230, 168, 0.16) !important;
+  --el-button-hover-border-color: var(--ce-accent-light) !important;
   --el-button-hover-text-color: #fff !important;
+  --el-button-active-bg-color: rgba(62, 230, 168, 0.22) !important;
+  --el-button-disabled-bg-color: transparent !important;
+  --el-button-disabled-text-color: rgba(62, 230, 168, 0.35) !important;
+  --el-button-disabled-border-color: rgba(62, 230, 168, 0.15) !important;
 }
 
-/* Success button */
+/* Success button (solid green, white text 5:1) */
 .el-button--success {
-  --el-button-bg-color: #16a34a !important;
-  --el-button-border-color: #16a34a !important;
+  --el-button-bg-color: #15803d !important;
+  --el-button-border-color: #15803d !important;
   --el-button-text-color: #fff !important;
-  --el-button-hover-bg-color: #22c55e !important;
+  --el-button-hover-bg-color: #166534 !important;
   --el-button-hover-border-color: #22c55e !important;
   --el-button-hover-text-color: #fff !important;
+  --el-button-active-bg-color: #14532d !important;
 }
 
-/* Danger button */
+.el-button--success.is-plain {
+  --el-button-bg-color: rgba(74, 222, 128, 0.08) !important;
+  --el-button-border-color: rgba(74, 222, 128, 0.35) !important;
+  --el-button-text-color: #4ade80 !important;
+  --el-button-hover-bg-color: rgba(74, 222, 128, 0.16) !important;
+  --el-button-hover-border-color: #4ade80 !important;
+  --el-button-hover-text-color: #fff !important;
+}
+
+/* Warning button (amber, dark text) */
+.el-button--warning {
+  --el-button-bg-color: rgba(251, 191, 36, 0.1) !important;
+  --el-button-border-color: rgba(251, 191, 36, 0.4) !important;
+  --el-button-text-color: #fbbf24 !important;
+  --el-button-hover-bg-color: rgba(251, 191, 36, 0.18) !important;
+  --el-button-hover-border-color: #fbbf24 !important;
+  --el-button-hover-text-color: #fde68a !important;
+  --el-button-active-bg-color: rgba(251, 191, 36, 0.24) !important;
+}
+
+/* Danger button (solid red, white text 4.8:1) */
 .el-button--danger {
   --el-button-bg-color: #dc2626 !important;
   --el-button-border-color: #dc2626 !important;
   --el-button-text-color: #fff !important;
-  --el-button-hover-bg-color: #ef4444 !important;
-  --el-button-hover-border-color: #ef4444 !important;
+  --el-button-hover-bg-color: #b91c1c !important;
+  --el-button-hover-border-color: #f87171 !important;
   --el-button-hover-text-color: #fff !important;
+  --el-button-active-bg-color: #991b1b !important;
 }
 
 /* Danger plain (outline) — used for delete buttons */
 .el-button--danger.is-plain {
-  --el-button-bg-color: rgba(220, 38, 38, 0.1) !important;
+  --el-button-bg-color: rgba(220, 38, 38, 0.08) !important;
   --el-button-border-color: rgba(248, 113, 113, 0.4) !important;
   --el-button-text-color: #f87171 !important;
-  --el-button-hover-bg-color: rgba(220, 38, 38, 0.2) !important;
+  --el-button-hover-bg-color: rgba(220, 38, 38, 0.18) !important;
   --el-button-hover-border-color: #f87171 !important;
   --el-button-hover-text-color: #fff !important;
 }
 
-/* Default button */
+/* Info button behaves like secondary */
+.el-button--info {
+  --el-button-bg-color: transparent !important;
+  --el-button-border-color: var(--ce-border-control) !important;
+  --el-button-text-color: var(--ce-text-secondary) !important;
+  --el-button-hover-bg-color: rgba(255, 255, 255, 0.05) !important;
+  --el-button-hover-border-color: rgba(255, 255, 255, 0.3) !important;
+  --el-button-hover-text-color: #fff !important;
+}
+
+/* Default button = secondary */
 .el-button--default {
   --el-button-bg-color: transparent !important;
-  --el-button-border-color: #333 !important;
+  --el-button-border-color: var(--ce-border-control) !important;
   --el-button-text-color: var(--ce-text-secondary) !important;
-  --el-button-hover-bg-color: var(--ce-bg-hover) !important;
-  --el-button-hover-border-color: var(--ce-purple-light) !important;
+  --el-button-hover-bg-color: rgba(62, 230, 168, 0.06) !important;
+  --el-button-hover-border-color: var(--ce-accent-light) !important;
   --el-button-hover-text-color: #fff !important;
 }
 
@@ -532,17 +705,31 @@ body::after {
 .el-button.is-text {
   --el-button-bg-color: transparent !important;
   --el-button-border-color: transparent !important;
-  --el-button-text-color: var(--ce-purple-light) !important;
-  --el-button-hover-bg-color: var(--ce-bg-hover) !important;
+  --el-button-text-color: var(--ce-text-secondary) !important;
+  --el-button-hover-bg-color: rgba(255, 255, 255, 0.06) !important;
   --el-button-hover-border-color: transparent !important;
   --el-button-hover-text-color: #fff !important;
+  --el-button-active-bg-color: rgba(255, 255, 255, 0.1) !important;
+  --el-button-disabled-bg-color: transparent !important;
+  --el-button-disabled-border-color: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
 }
+
+.el-button--primary.is-text { --el-button-text-color: var(--ce-accent-light) !important; }
+.el-button--danger.is-text { --el-button-text-color: #f87171 !important; --el-button-hover-bg-color: rgba(248, 113, 113, 0.1) !important; }
+.el-button--success.is-text { --el-button-text-color: #4ade80 !important; }
+.el-button--warning.is-text { --el-button-text-color: #fbbf24 !important; }
 
 /* Link button */
 .el-button.is-link {
-  --el-button-text-color: var(--ce-purple-light) !important;
+  --el-button-text-color: var(--ce-accent-light) !important;
   --el-button-hover-text-color: #fff !important;
+  --el-button-hover-link-text-color: #fff !important;
+  background-image: none !important;
 }
+
+.el-button.is-link.el-button--danger { --el-button-text-color: #f87171 !important; }
 
 /* --- Dialog --- */
 .el-dialog {
@@ -586,86 +773,103 @@ body::after {
 }
 
 .el-menu-item.is-active {
-  color: var(--ce-purple-light) !important;
-  background-color: rgba(167, 139, 250, 0.08) !important;
+  color: var(--ce-accent-light) !important;
+  background-color: rgba(62, 230, 168, 0.08) !important;
 }
 
 /* ============================
-   STEPS — Comprehensive Fix
+   STEPS
+   current = mint, finished = teal + check, upcoming = muted.
+   Finished heads use either .is-finish or .is-success (finish-status="success").
    ============================ */
 .el-steps {
-  --el-color-success: var(--ce-purple-light);
+  --el-color-success: var(--ce-accent-light);
 }
 
 .el-step__head .el-step__icon,
 .el-step__head .el-step__icon.is-icon,
 .el-step__head .el-step__icon.is-text {
+  width: 32px !important;
+  height: 32px !important;
   border-radius: 999px !important;
-  overflow: hidden !important;
+  border: 2px solid #2e2e2e !important;
+  background: #0a0a0a !important;
+  color: var(--ce-text-muted) !important;
+  font-size: 15px !important;
+  box-shadow: 0 0 0 4px #000 !important;  /* masks the connector line behind the circle */
+  transition: background var(--ce-transition-normal), border-color var(--ce-transition-normal), color var(--ce-transition-normal);
 }
 
-/* Finished step icon */
-.el-step__head.is-finish {
-  color: var(--ce-purple-light) !important;
-  border-color: var(--ce-purple-light) !important;
+.el-step__head .el-step__icon-inner {
+  background: transparent !important;
+  font-size: 14px !important;
+  font-weight: 700 !important;
+}
+
+.el-step__head .el-step__icon .el-icon {
+  font-size: 15px;
+}
+
+/* Finished */
+.el-step__head.is-finish,
+.el-step__head.is-success {
+  color: var(--ce-accent-mid) !important;
+  border-color: var(--ce-accent-mid) !important;
 }
 
 .el-step__head.is-finish .el-step__icon,
-.el-step__head.is-finish .el-step__icon.is-icon,
-.el-step__head.is-finish .el-step__icon.is-text {
-  background: var(--ce-purple-dark) !important;
-  border-color: var(--ce-purple-dark) !important;
+.el-step__head.is-success .el-step__icon {
+  background: var(--ce-accent-dark) !important;
+  border-color: var(--ce-accent-dark) !important;
   color: #fff !important;
-  box-shadow: 0 0 0 1px rgba(167, 139, 250, 0.22) !important;
 }
 
-.el-step__head.is-finish .el-step__icon-inner {
+.el-step__head.is-finish .el-step__icon *,
+.el-step__head.is-success .el-step__icon * {
+  color: #fff !important;
   background: transparent !important;
-  color: #fff !important;
 }
 
-.el-step__head.is-finish .el-step__icon .el-step__icon-inner,
-.el-step__head.is-finish .el-step__icon .is-icon,
-.el-step__head.is-finish .el-step__icon .el-icon,
-.el-step__head.is-finish .el-step__icon svg,
-.el-step__head.is-finish .el-step__icon path {
-  color: #fff !important;
-  fill: currentColor !important;
-}
-
-/* Process (current) step icon */
-.el-step__head.is-process .el-step__icon,
-.el-step__head.is-process .el-step__icon.is-icon,
-.el-step__head.is-process .el-step__icon.is-text {
-  border-color: var(--ce-purple-light) !important;
-  color: var(--ce-purple-light) !important;
-  background: transparent !important;
+/* Current */
+.el-step__head.is-process .el-step__icon {
+  border-color: var(--ce-accent-light) !important;
+  background: rgba(62, 230, 168, 0.14) !important;
+  color: var(--ce-accent-light) !important;
+  box-shadow: 0 0 0 4px #000, 0 0 0 7px rgba(62, 230, 168, 0.18) !important;
 }
 
 .el-step__head.is-process .el-step__icon .el-icon {
-  color: var(--ce-purple-light) !important;
+  color: var(--ce-accent-light) !important;
 }
 
-/* Waiting step icon */
-.el-step__head.is-wait .el-step__icon,
-.el-step__head.is-wait .el-step__icon.is-icon,
-.el-step__head.is-wait .el-step__icon.is-text {
-  border-color: #333 !important;
+/* Upcoming */
+.el-step__head.is-wait .el-step__icon {
+  border-color: #2e2e2e !important;
   color: var(--ce-text-muted) !important;
-  background: transparent !important;
+  background: #0a0a0a !important;
 }
 
-.el-step__head.is-wait .el-step__icon .el-icon {
-  color: var(--ce-text-muted) !important;
+/* Errors */
+.el-step__head.is-error .el-step__icon {
+  border-color: #f87171 !important;
+  color: #f87171 !important;
 }
 
-/* Step titles */
-.el-step__title.is-finish {
-  color: var(--ce-purple-light) !important;
+/* Titles */
+.el-step__title {
+  font-size: 13px !important;
+  line-height: 1.4 !important;
+  margin-top: 6px;
+}
+
+.el-step__title.is-finish,
+.el-step__title.is-success {
+  color: var(--ce-text-secondary) !important;
+  font-weight: 500 !important;
 }
 
 .el-step__title.is-process {
-  color: var(--ce-text-primary) !important;
+  color: var(--ce-accent-light) !important;
   font-weight: 600 !important;
 }
 
@@ -673,23 +877,20 @@ body::after {
   color: var(--ce-text-muted) !important;
 }
 
-/* Step connecting lines */
-.el-step__line {
-  background-color: #333 !important;
+/* Connector lines (centred on the 32px icon) */
+.el-steps--horizontal .el-step__line {
+  top: 15px !important;
+  height: 2px !important;
+  background-color: #262626 !important;
 }
 
 .el-step__line-inner {
-  border-color: var(--ce-purple-light) !important;
-  border-width: 2px !important;
+  border-color: var(--ce-accent-mid) !important;
+  border-width: 1px !important;
 }
 
-.el-step__head.is-finish + .el-step__line .el-step__line-inner,
-.el-step.is-simple .el-step__head.is-finish .el-step__line .el-step__line-inner {
-  background-color: var(--ce-purple-light) !important;
-}
-
-/* Step description */
-.el-step__description.is-finish {
+/* Description */
+.el-step__description {
   color: var(--ce-text-muted) !important;
 }
 
@@ -697,15 +898,19 @@ body::after {
   color: var(--ce-text-secondary) !important;
 }
 
-.el-step__description.is-wait {
-  color: var(--ce-text-muted) !important;
-}
-
 /* --- Tags --- */
 .el-tag {
   background: var(--ce-bg-tag) !important;
-  border-color: #333 !important;
+  border-color: #2e2e2e !important;
   color: var(--ce-text-secondary) !important;
+  font-weight: 500;
+}
+
+.el-tag.el-tag--dark,
+.el-tag--primary.el-tag--dark {
+  background: rgba(62, 230, 168, 0.16) !important;
+  border-color: rgba(62, 230, 168, 0.35) !important;
+  color: var(--ce-accent-light) !important;
 }
 
 .el-tag .el-tag__close {
@@ -714,14 +919,14 @@ body::after {
 
 .el-tag--info {
   background: rgba(156, 163, 175, 0.1) !important;
-  border-color: rgba(156, 163, 175, 0.2) !important;
-  color: #9ca3af !important;
+  border-color: rgba(156, 163, 175, 0.22) !important;
+  color: #b4bac4 !important;
 }
 
 .el-tag--primary {
-  background: rgba(167, 139, 250, 0.1) !important;
-  border-color: rgba(167, 139, 250, 0.2) !important;
-  color: var(--ce-purple-light) !important;
+  background: rgba(62, 230, 168, 0.1) !important;
+  border-color: rgba(62, 230, 168, 0.2) !important;
+  color: var(--ce-accent-light) !important;
 }
 
 .el-tag--success {
@@ -742,56 +947,128 @@ body::after {
   color: #f87171 !important;
 }
 
-/* --- Radio / Checkbox --- */
+/* --- Radio buttons (segmented) --- */
 .el-radio-button__inner {
   background: var(--ce-bg-input) !important;
   border-color: var(--ce-border-input) !important;
   color: var(--ce-text-secondary) !important;
+  font-weight: 500 !important;
 }
 
-.el-radio-button__original-radio:checked + .el-radio-button__inner {
-  background: var(--ce-purple-dark) !important;
-  border-color: var(--ce-purple-dark) !important;
+.el-radio-button:first-child .el-radio-button__inner {
+  border-left-color: var(--ce-border-input) !important;
+}
+
+.el-radio-button__inner:hover {
   color: #fff !important;
-  box-shadow: -1px 0 0 0 var(--ce-purple-dark) !important;
 }
 
+.el-radio-button__original-radio:checked + .el-radio-button__inner,
+.el-radio-button.is-active .el-radio-button__inner {
+  background: rgba(62, 230, 168, 0.14) !important;
+  border-color: var(--ce-accent-light) !important;
+  color: var(--ce-accent-light) !important;
+  box-shadow: -1px 0 0 0 var(--ce-accent-light) !important;
+  font-weight: 600 !important;
+}
+
+.el-radio-button:first-child.is-active .el-radio-button__inner {
+  box-shadow: none !important;
+}
+
+.el-radio-button__original-radio:focus-visible + .el-radio-button__inner {
+  outline: 2px solid rgba(62, 230, 168, 0.6);
+  outline-offset: 1px;
+}
+
+.el-radio-button.is-disabled .el-radio-button__inner {
+  color: rgba(255, 255, 255, 0.25) !important;
+  background: #0c0c0c !important;
+}
+
+/* --- Radio --- */
 .el-radio__input .el-radio__inner {
   background-color: var(--ce-bg-input) !important;
-  border-color: var(--ce-border-input) !important;
+  border-color: #3a3a3a !important;
 }
 
 .el-radio__input.is-checked .el-radio__inner {
-  background-color: var(--ce-purple-dark) !important;
-  border-color: var(--ce-purple-dark) !important;
+  background-color: var(--ce-accent-light) !important;
+  border-color: var(--ce-accent-light) !important;
+}
+
+.el-radio__input.is-checked .el-radio__inner::after {
+  background-color: var(--ce-accent-ink) !important;
 }
 
 .el-radio__label {
   color: var(--ce-text-secondary) !important;
 }
 
-.el-checkbox__inner {
-  background-color: var(--ce-bg-input) !important;
-  border-color: var(--ce-border-input) !important;
+.el-radio__input.is-checked + .el-radio__label {
+  color: var(--ce-text-primary) !important;
 }
 
-.el-checkbox__input.is-checked .el-checkbox__inner {
-  background-color: var(--ce-purple-dark) !important;
-  border-color: var(--ce-purple-dark) !important;
+/* --- Checkbox --- */
+.el-checkbox__inner {
+  background-color: var(--ce-bg-input) !important;
+  border-color: #3a3a3a !important;
+}
+
+.el-checkbox__input.is-checked .el-checkbox__inner,
+.el-checkbox__input.is-indeterminate .el-checkbox__inner {
+  background-color: var(--ce-accent-light) !important;
+  border-color: var(--ce-accent-light) !important;
+}
+
+.el-checkbox__input.is-checked .el-checkbox__inner::after {
+  border-color: var(--ce-accent-ink) !important;
 }
 
 .el-checkbox__label {
   color: var(--ce-text-secondary) !important;
 }
 
+.el-checkbox__input.is-checked + .el-checkbox__label {
+  color: var(--ce-text-primary) !important;
+}
+
+.el-checkbox__original:focus-visible + .el-checkbox__inner,
+.el-radio__original:focus-visible + .el-radio__inner {
+  outline: 2px solid rgba(62, 230, 168, 0.6);
+  outline-offset: 2px;
+}
+
+/* --- Switch --- */
 .el-switch__core {
-  background-color: #333 !important;
-  border-color: #333 !important;
+  background-color: #2a2a2a !important;
+  border-color: #3a3a3a !important;
+}
+
+.el-switch__core .el-switch__action {
+  background-color: #d4d4d4 !important;
 }
 
 .el-switch.is-checked .el-switch__core {
-  background-color: var(--ce-purple-dark) !important;
-  border-color: var(--ce-purple-dark) !important;
+  background-color: var(--ce-accent-mid) !important;
+  border-color: var(--ce-accent-mid) !important;
+}
+
+.el-switch.is-checked .el-switch__core .el-switch__action {
+  background-color: #fff !important;
+}
+
+.el-switch__label {
+  color: var(--ce-text-muted) !important;
+}
+
+.el-switch__label.is-active {
+  color: var(--ce-accent-light) !important;
+}
+
+.el-switch__input:focus-visible ~ .el-switch__core {
+  outline: 2px solid rgba(62, 230, 168, 0.6) !important;
+  outline-offset: 2px;
 }
 
 /* --- Form --- */
@@ -801,11 +1078,15 @@ body::after {
 
 /* --- Progress Bar --- */
 .el-progress-bar__outer {
-  background-color: #1a1a1a !important;
+  background-color: #1f1f1f !important;
+}
+
+.el-progress-circle__track {
+  stroke: #1f1f1f !important;
 }
 
 .el-progress-bar__inner {
-  background: var(--ce-purple-gradient) !important;
+  background: var(--ce-accent-gradient) !important;
 }
 
 .el-progress__text {
@@ -816,7 +1097,7 @@ body::after {
 .el-pagination {
   --el-pagination-bg-color: transparent;
   --el-pagination-button-bg-color: #111;
-  --el-pagination-hover-color: var(--ce-purple-light);
+  --el-pagination-hover-color: var(--ce-accent-light);
 }
 
 .el-pagination button,
@@ -827,9 +1108,9 @@ body::after {
 }
 
 .el-pager li.is-active {
-  background: var(--ce-purple-dark) !important;
+  background: var(--ce-accent-dark) !important;
   color: #fff !important;
-  border-color: var(--ce-purple-dark) !important;
+  border-color: var(--ce-accent-dark) !important;
 }
 
 /* --- Empty State --- */
@@ -849,24 +1130,38 @@ body::after {
 /* --- Alert --- */
 .el-alert {
   border-radius: var(--ce-radius-sm) !important;
+  border: 1px solid transparent !important;
 }
 
-.el-alert--info {
-  background-color: rgba(167, 139, 250, 0.06) !important;
-  border-color: rgba(167, 139, 250, 0.15) !important;
-}
+.el-alert .el-alert__title { color: var(--ce-text-primary) !important; }
+.el-alert .el-alert__description { color: var(--ce-text-secondary) !important; }
+.el-alert .el-alert__close-btn { color: var(--ce-text-muted) !important; }
 
-.el-alert--info .el-alert__title {
-  color: var(--ce-text-primary) !important;
+.el-alert--info,
+.el-alert--primary {
+  background-color: rgba(62, 230, 168, 0.06) !important;
+  border-color: rgba(62, 230, 168, 0.18) !important;
 }
+.el-alert--info .el-alert__icon,
+.el-alert--primary .el-alert__icon { color: var(--ce-accent-light) !important; }
 
-.el-alert--info .el-alert__description {
-  color: var(--ce-text-secondary) !important;
+.el-alert--success {
+  background-color: rgba(74, 222, 128, 0.07) !important;
+  border-color: rgba(74, 222, 128, 0.22) !important;
 }
+.el-alert--success .el-alert__icon { color: #4ade80 !important; }
 
-.el-alert .el-alert__icon {
-  color: var(--ce-purple-light) !important;
+.el-alert--warning {
+  background-color: rgba(251, 191, 36, 0.07) !important;
+  border-color: rgba(251, 191, 36, 0.24) !important;
 }
+.el-alert--warning .el-alert__icon { color: #fbbf24 !important; }
+
+.el-alert--error {
+  background-color: rgba(248, 113, 113, 0.07) !important;
+  border-color: rgba(248, 113, 113, 0.24) !important;
+}
+.el-alert--error .el-alert__icon { color: #f87171 !important; }
 
 /* --- Collapse --- */
 .el-collapse {
@@ -900,14 +1195,52 @@ body::after {
   color: var(--ce-text-primary) !important;
 }
 
+.el-message-box__message,
 .el-message-box__message p {
   color: var(--ce-text-secondary) !important;
 }
 
-.el-message-box__btns .el-button--primary {
-  --el-button-bg-color: #6D28D9 !important;
-  --el-button-border-color: #6D28D9 !important;
+.el-message-box__headerbtn .el-message-box__close {
+  color: var(--ce-text-muted) !important;
 }
+
+.el-message-box__headerbtn:hover .el-message-box__close {
+  color: #fff !important;
+}
+
+/* --- ElMessage toasts --- */
+.el-message {
+  background-color: #111 !important;
+  border: 1px solid #2a2a2a !important;
+  border-radius: var(--ce-radius-sm) !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5) !important;
+}
+
+.el-message .el-message__content { color: var(--ce-text-primary) !important; }
+.el-message--success { border-color: rgba(74, 222, 128, 0.35) !important; }
+.el-message--success .el-message__icon { color: #4ade80 !important; }
+.el-message--warning { border-color: rgba(251, 191, 36, 0.35) !important; }
+.el-message--warning .el-message__icon { color: #fbbf24 !important; }
+.el-message--error { border-color: rgba(248, 113, 113, 0.35) !important; }
+.el-message--error .el-message__icon { color: #f87171 !important; }
+.el-message--info { border-color: rgba(62, 230, 168, 0.3) !important; }
+.el-message--info .el-message__icon { color: var(--ce-accent-light) !important; }
+
+/* --- ElNotification --- */
+.el-notification {
+  background-color: #111 !important;
+  border: 1px solid #2a2a2a !important;
+  border-radius: var(--ce-radius-md) !important;
+}
+
+.el-notification__title { color: var(--ce-text-primary) !important; }
+.el-notification__content,
+.el-notification__content p { color: var(--ce-text-secondary) !important; }
+.el-notification__closeBtn { color: var(--ce-text-muted) !important; }
+.el-notification .el-icon.el-notification--success { color: #4ade80 !important; }
+.el-notification .el-icon.el-notification--warning { color: #fbbf24 !important; }
+.el-notification .el-icon.el-notification--error { color: #f87171 !important; }
+.el-notification .el-icon.el-notification--info { color: var(--ce-accent-light) !important; }
 
 /* --- Slider --- */
 .el-slider__runway {
@@ -915,11 +1248,22 @@ body::after {
 }
 
 .el-slider__bar {
-  background: var(--ce-purple-gradient) !important;
+  background: var(--ce-accent-gradient) !important;
 }
 
 .el-slider__button {
-  border-color: var(--ce-purple-light) !important;
+  border-color: var(--ce-accent-light) !important;
+  background-color: #0a0a0a !important;
+}
+
+.el-slider__button-wrapper:focus-visible .el-slider__button,
+.el-slider__button.hover,
+.el-slider__button:hover {
+  box-shadow: var(--ce-focus-ring) !important;
+}
+
+.el-slider__stop {
+  background-color: #444 !important;
 }
 
 .el-slider__input .el-input-number {
@@ -929,6 +1273,39 @@ body::after {
 /* --- Color Picker --- */
 .el-color-picker__trigger {
   border-color: var(--ce-border-input) !important;
+  background-color: var(--ce-bg-input) !important;
+  border-radius: var(--ce-radius-xs) !important;
+}
+
+.el-color-picker__trigger:hover {
+  border-color: var(--ce-accent-light) !important;
+}
+
+.el-color-picker__color {
+  border-color: var(--ce-border-strong) !important;
+  border-radius: 4px !important;
+}
+
+.el-color-picker__icon {
+  color: var(--ce-text-primary) !important;
+  mix-blend-mode: difference;
+}
+
+.el-color-dropdown {
+  background: var(--ce-surface-1) !important;
+}
+
+.el-color-dropdown__btns .el-color-dropdown__value .el-input__wrapper {
+  background-color: var(--ce-bg-input) !important;
+}
+
+/* --- Button groups: keep a single 1px seam between segments --- */
+.el-button-group > .el-button:not(:last-child) {
+  border-right-color: var(--ce-border-control) !important;
+}
+
+.el-button-group > .el-button + .el-button {
+  margin-left: -1px !important;
 }
 
 /* ========================================
@@ -974,6 +1351,17 @@ body::after {
   background: #111 !important;
   border-color: var(--ce-border-input) !important;
   color: var(--ce-text-secondary) !important;
+  z-index: 2;
+}
+
+.el-input-number .el-input-number__decrease:hover,
+.el-input-number .el-input-number__increase:hover {
+  color: var(--ce-accent-light) !important;
+}
+
+.el-input-number .el-input-number__decrease.is-disabled,
+.el-input-number .el-input-number__increase.is-disabled {
+  color: rgba(255, 255, 255, 0.2) !important;
 }
 
 /* --- Popper (tooltips, dropdowns) --- */
@@ -992,6 +1380,67 @@ body::after {
   border-color: var(--ce-border-input) !important;
 }
 
+/* Tooltips: Element's dark tooltip uses --el-bg-color as TEXT colour, which is
+   near-black in our theme -> invisible text. Force readable tooltip styling. */
+.el-popper.is-dark {
+  background: #1c1c1c !important;
+  border: 1px solid #333 !important;
+  color: #fff !important;
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 320px;
+}
+
+.el-popper.is-dark .el-popper__arrow::before {
+  background: #1c1c1c !important;
+  border-color: #333 !important;
+}
+
+.el-popper.is-light {
+  color: var(--ce-text-secondary);
+}
+
+/* Dropdown menus */
+.el-dropdown-menu {
+  background: #0a0a0a !important;
+}
+
+.el-dropdown-menu__item {
+  color: var(--ce-text-secondary) !important;
+}
+
+.el-dropdown-menu__item:not(.is-disabled):hover,
+.el-dropdown-menu__item:not(.is-disabled):focus {
+  background-color: var(--ce-bg-hover) !important;
+  color: #fff !important;
+}
+
+/* Upload drag zone */
+.el-upload-dragger {
+  background-color: var(--ce-bg-input) !important;
+  border: 1px dashed #333 !important;
+  border-radius: var(--ce-radius-sm) !important;
+}
+
+.el-upload-dragger:hover,
+.el-upload-dragger.is-dragover {
+  border-color: var(--ce-accent-light) !important;
+  background-color: rgba(62, 230, 168, 0.04) !important;
+}
+
+/* Skeleton */
+.el-skeleton {
+  --el-skeleton-color: #161616;
+  --el-skeleton-to-color: #222;
+}
+
+/* Date picker panels */
+.el-picker-panel {
+  background: #0a0a0a !important;
+  color: var(--ce-text-secondary) !important;
+  border-color: var(--ce-border-input) !important;
+}
+
 /* --- Avatar --- */
 .el-avatar {
   --el-avatar-bg-color: #222;
@@ -1007,7 +1456,7 @@ body::after {
 }
 
 .el-loading-spinner .path {
-  stroke: var(--ce-purple-light) !important;
+  stroke: var(--ce-accent-light) !important;
 }
 
 /* --- Scrollbar --- */

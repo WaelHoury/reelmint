@@ -41,6 +41,51 @@ class AuthError(YouTubeError):
     """Authentication/authorization error (401/403 — token expired or revoked)."""
 
 
+class QuotaExceededError(YouTubeError):
+    """The project's daily API quota or the channel's upload limit is used up.
+
+    YouTube resets quotas at midnight Pacific time; retrying before then fails.
+    """
+
+
+# Error reasons that mean "out of quota / upload limit" rather than bad credentials.
+QUOTA_REASONS = frozenset({
+    "quotaExceeded", "uploadLimitExceeded", "dailyLimitExceeded", "dailyLimitExceededUnreg",
+})
+RATE_LIMIT_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
+
+
+def error_reasons(resp) -> set:
+    """The ``error.errors[].reason`` values of a Google API error response."""
+    try:
+        data = resp.json()
+    except Exception:
+        return set()
+    err = data.get("error") if isinstance(data, dict) else None
+    if not isinstance(err, dict):
+        return set()
+    reasons = {e.get("reason") for e in err.get("errors") or [] if isinstance(e, dict)}
+    status = err.get("status")
+    if status == "RESOURCE_EXHAUSTED":
+        reasons.add("quotaExceeded")
+    return {r for r in reasons if r}
+
+
+def _raise_for_api_error(resp, during: str) -> None:
+    """Map a failed upload response to the right error class (quota before auth)."""
+    reasons = error_reasons(resp)
+    if reasons & QUOTA_REASONS:
+        raise QuotaExceededError(
+            f"YouTube quota exceeded ({', '.join(sorted(reasons & QUOTA_REASONS))}) {during}"
+        )
+    if reasons & RATE_LIMIT_REASONS or resp.status_code == 429:
+        raise RetryableYouTubeError(f"YouTube rate limited {during} ({resp.status_code})")
+    if resp.status_code in (401, 403):
+        raise AuthError(f"Upload auth failed {during}: {resp.status_code}")
+    if resp.status_code >= 500:
+        raise RetryableYouTubeError(f"YouTube server error {during}: {resp.status_code}")
+
+
 def build_auth_url(state: str) -> str:
     """Build Google OAuth2 consent URL for YouTube access."""
     params = {
@@ -147,7 +192,8 @@ def upload_video(
     Args:
         access_token: Valid OAuth2 access token with youtube.upload scope.
         video_path: Path to the video file on disk.
-        metadata: {title, description, tags, privacy_status, category_id, made_for_kids}
+        metadata: {title, description, tags, privacy_status, category_id, made_for_kids,
+            publish_at (optional RFC 3339 UTC time: upload private, YouTube publishes then)}
         on_progress: Optional callback(percent, message).
 
     Returns: {platform_media_id, platform_post_url, provider_status}
@@ -168,6 +214,13 @@ def upload_video(
         },
     }
 
+    # Native YouTube scheduling: the video stays private until publishAt
+    # (RFC 3339, UTC), when YouTube makes it public.
+    publish_at = metadata.get("publish_at")
+    if publish_at:
+        body["status"]["privacyStatus"] = "private"
+        body["status"]["publishAt"] = publish_at
+
     # Step 1: Initiate resumable upload
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -184,11 +237,8 @@ def upload_video(
         timeout=30,
     )
 
-    if init_resp.status_code == 401 or init_resp.status_code == 403:
-        raise AuthError(f"Upload auth failed: {init_resp.status_code}")
-    if init_resp.status_code >= 500:
-        raise RetryableYouTubeError(f"YouTube server error on init: {init_resp.status_code}")
     if init_resp.status_code != 200:
+        _raise_for_api_error(init_resp, "on init")
         raise YouTubeError(f"Upload init failed: {init_resp.status_code} — {init_resp.text}")
 
     upload_url = init_resp.headers.get("Location")
@@ -213,12 +263,8 @@ def upload_video(
             except (requests.ConnectionError, requests.Timeout) as e:
                 raise RetryableYouTubeError(f"Network error during upload: {e}") from e
 
-            if resp.status_code == 401 or resp.status_code == 403:
-                raise AuthError(f"Upload auth failed mid-upload: {resp.status_code}")
-            if resp.status_code == 429:
-                raise RetryableYouTubeError("YouTube rate limited (429)")
-            if resp.status_code >= 500:
-                raise RetryableYouTubeError(f"YouTube server error during upload: {resp.status_code}")
+            if resp.status_code not in (200, 201, 308):
+                _raise_for_api_error(resp, "mid-upload")
 
             uploaded += len(chunk)
             pct = int((uploaded / file_size) * 100)

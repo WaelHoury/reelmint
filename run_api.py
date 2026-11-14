@@ -21,7 +21,7 @@ from app.core.config import settings
 if __name__ == "__main__":
     print(f"""
 {'='*60}
-AI Video Maker API Server
+Reelmint API Server
 {'='*60}
 
 Starting server at http://{settings.api_host}:{settings.api_port}

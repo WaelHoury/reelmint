@@ -60,7 +60,7 @@ async function handleDelete(video) {
     await ElMessageBox.confirm(
       `Delete "${video.title}"? This cannot be undone.`,
       'Delete Video',
-      { type: 'warning', confirmButtonText: 'Delete', cancelButtonText: 'Cancel' }
+      { type: 'warning', confirmButtonText: 'Delete', cancelButtonText: 'Cancel', confirmButtonClass: 'el-button--danger' }
     )
     await deleteVideo(video.id)
     ElMessage.success('Video deleted')
@@ -129,16 +129,16 @@ onMounted(fetchVideos)
               {{ formatDate(video.created_at) }}
             </div>
             <div class="card-actions">
-              <el-button size="small" type="primary" plain @click.stop="router.push(`/editor/video/${video.id}`)">
+              <el-button size="small" type="primary" plain title="Edit" aria-label="Edit video" @click.stop="router.push(`/editor/video/${video.id}`)">
                 <el-icon><Edit /></el-icon>
               </el-button>
-              <el-button size="small" type="success" plain @click.stop="shareVideo(video)">
+              <el-button size="small" type="primary" plain title="Publish to YouTube" aria-label="Publish video" @click.stop="shareVideo(video)">
                 <el-icon><Upload /></el-icon>
               </el-button>
-              <el-button size="small" type="primary" plain @click.stop="downloadVideo(video)">
+              <el-button size="small" title="Download" aria-label="Download video" @click.stop="downloadVideo(video)">
                 <el-icon><Download /></el-icon>
               </el-button>
-              <el-button size="small" type="danger" plain @click.stop="handleDelete(video)">
+              <el-button size="small" type="danger" plain title="Delete" aria-label="Delete video" @click.stop="handleDelete(video)">
                 <el-icon><Delete /></el-icon>
               </el-button>
             </div>

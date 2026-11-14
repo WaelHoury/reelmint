@@ -1,4 +1,4 @@
-"""SQLAlchemy models for User, Video, UserTTSVoice, SocialAccount, and PublishJob tables."""
+"""SQLAlchemy models for User, Video, UserTTSVoice, SocialAccount, PublishJob, Batch and BatchItem tables."""
 
 from datetime import datetime
 import sqlalchemy as sa
@@ -23,6 +23,7 @@ class User(Base):
     tts_voices = relationship("UserTTSVoice", back_populates="user", cascade="all, delete-orphan")
     social_accounts = relationship("SocialAccount", back_populates="user", cascade="all, delete-orphan")
     publish_jobs = relationship("PublishJob", back_populates="user", cascade="all, delete-orphan")
+    batches = relationship("Batch", back_populates="user", cascade="all, delete-orphan")
 
 
 class Video(Base):
@@ -127,3 +128,58 @@ class PublishJob(Base):
     user = relationship("User", back_populates="publish_jobs")
     video = relationship("Video", back_populates="publish_jobs")
     social_account = relationship("SocialAccount", back_populates="publish_jobs")
+
+
+class Batch(Base):
+    """A queue of videos produced one at a time (and optionally published)."""
+
+    __tablename__ = "batches"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    # draft | running | paused | completed | cancelled
+    status = Column(String(50), default="draft", server_default="draft", nullable=False)
+    settings = Column(JSON, nullable=True)
+    publish = Column(JSON, nullable=True)
+    # Hands-off autopilot: failed items retry automatically, YouTube quota
+    # errors wait for the daily reset, the batch never needs the user.
+    hands_off = Column(Boolean, default=False, server_default=sa.false(), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, server_default=sa.func.now())
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=sa.func.now())
+
+    user = relationship("User", back_populates="batches")
+    items = relationship(
+        "BatchItem",
+        back_populates="batch",
+        cascade="all, delete-orphan",
+        order_by="BatchItem.position",
+    )
+
+
+class BatchItem(Base):
+    """One video in a batch: a topic (prompt) or a full script."""
+
+    __tablename__ = "batch_items"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    batch_id = Column(Integer, ForeignKey("batches.id", ondelete="CASCADE"), nullable=False, index=True)
+    position = Column(Integer, nullable=False)
+    input_type = Column(String(20), nullable=False)  # prompt | script
+    input_text = Column(Text, nullable=False)
+    title = Column(String(255), nullable=True)
+    # pending | scripting | finding_clips | rendering | publishing | published | done | failed | cancelled
+    status = Column(String(50), default="pending", server_default="pending", nullable=False)
+    session_id = Column(String(64), nullable=True)
+    video_id = Column(Integer, ForeignKey("videos.id", ondelete="SET NULL"), nullable=True)
+    publish_job_id = Column(Integer, nullable=True)
+    scheduled_publish_at = Column(DateTime, nullable=True)
+    youtube_url = Column(String(512), nullable=True)
+    error_message = Column(Text, nullable=True)
+    attempts = Column(Integer, default=0, server_default="0", nullable=False)
+    # Hands-off retries: the runner skips this pending item until then (naive UTC).
+    next_attempt_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    batch = relationship("Batch", back_populates="items")

@@ -54,7 +54,10 @@ const mainStyle = computed(() => ({
 
 @media (max-width: 768px) {
   .app-main {
+    /* sidebar is a fixed 64px icon rail on small screens */
+    margin-left: var(--ce-sidebar-collapsed) !important;
     padding: 20px 16px;
+    min-width: 0;
   }
 }
 </style>

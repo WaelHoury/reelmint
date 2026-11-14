@@ -15,9 +15,12 @@ from app.db.base import get_db
 from app.db.models import User, Video
 from app.api.deps import get_current_user, get_current_user_from_token_param, get_owned_session
 from app.api.services.session_store import session_store
-from app.api.services.editor_service import editor_service, video_edit_lock_key
+from app.api.services.editor_service import (
+    editor_service, video_edit_lock_key, EditorValidationError, ClipReplacementError,
+)
 from app.utils.helpers import stream_file_response, project_lock
 from app.api.limiter import limiter
+from app.api.routes.batches import FriendlyValidationRoute
 from app.api.schemas.editor import (
     EditorDataResponse,
     EditorRenderRequest,
@@ -25,9 +28,53 @@ from app.api.schemas.editor import (
     ClipSearchRequest,
     ClipSearchResult,
 )
+from contextlib import nullcontext
 from typing import List
 
-router = APIRouter(tags=["editor"])
+# Invalid bodies (bad trims, caption times, colours) -> 400 with one readable sentence
+router = APIRouter(tags=["editor"], route_class=FriendlyValidationRoute)
+
+
+def _edit_lock(output_path, blocking_timeout: int = 10):
+    """The lock every writer of this video's mp4 / project files takes."""
+    if not output_path:
+        return nullcontext()
+    return project_lock(video_edit_lock_key(output_path), blocking_timeout=blocking_timeout)
+
+
+def _load_editor_data(project_dir: Path, output_path, stream_url: str,
+                      preview_stream_url: str, session_id: str = None, video_id: int = None):
+    """Build editor data under the edit lock: preview / project.json may be (re)written."""
+    with _edit_lock(output_path, blocking_timeout=30):
+        project = editor_service.load_project(project_dir)
+        editor_service.generate_preview(project_dir, project)
+        return editor_service.get_editor_data(
+            project_dir, project, stream_url,
+            session_id=session_id,
+            video_id=video_id if video_id is not None else project.get("video_id"),
+            preview_stream_url=preview_stream_url,
+        )
+
+
+def _preview_path(project_dir: Path, output_path) -> Path | None:
+    """Current preview; built under the edit lock only when it is stale or missing."""
+    project = editor_service.load_project(project_dir)
+    if editor_service.preview_is_current(project_dir, project):
+        return project_dir / "video_preview.mp4"
+    with _edit_lock(output_path):
+        project = editor_service.load_project(project_dir)
+        return editor_service.generate_preview(project_dir, project)
+
+
+def _render_error(e: Exception) -> HTTPException:
+    if isinstance(e, HTTPException):
+        return e  # 404/400 from lookups, 409 from lock contention
+    if isinstance(e, EditorValidationError):
+        return HTTPException(status_code=400, detail=str(e))
+    if isinstance(e, ClipReplacementError):
+        return HTTPException(status_code=502, detail=str(e))
+    logger.exception("Video render failed", exc_info=e)
+    return HTTPException(status_code=500, detail="Render failed")
 
 
 # ─── Session-based editor endpoints ───
@@ -55,19 +102,11 @@ def get_session_editor_data(
             detail="Project data not available. The video may have been generated before the editor feature was added.",
         )
 
-    project = editor_service.load_project(project_dir)
-
-    # Generate subtitle-free preview for the editor
-    editor_service.generate_preview(project_dir, project)
-
-    stream_url = f"/api/sessions/{session_id}/video/stream"
-    preview_stream_url = f"/api/sessions/{session_id}/editor/preview-stream"
-
-    return editor_service.get_editor_data(
-        project_dir, project, stream_url,
+    return _load_editor_data(
+        project_dir, session.output_path,
+        stream_url=f"/api/sessions/{session_id}/video/stream",
+        preview_stream_url=f"/api/sessions/{session_id}/editor/preview-stream",
         session_id=session_id,
-        video_id=project.get("video_id"),
-        preview_stream_url=preview_stream_url,
     )
 
 
@@ -89,13 +128,14 @@ async def render_session_editor(
         if not project_dir:
             raise HTTPException(status_code=400, detail="Project data not available for this video")
 
-        project = editor_service.load_project(project_dir)
         output_path = Path(session.output_path) if session.output_path else None
         if not output_path:
             raise HTTPException(status_code=400, detail="No output path for this session")
 
         # Same key as subtitle regeneration (routes/videos.py): both rewrite this mp4.
         with project_lock(video_edit_lock_key(output_path)):
+            # Load inside the lock so we never render from a stale project.json
+            project = editor_service.load_project(project_dir)
             render_type = editor_service.render_changes(
                 project_dir, project,
                 subtitles=render_request.subtitles.model_dump() if render_request.subtitles else None,
@@ -110,11 +150,8 @@ async def render_session_editor(
     try:
         loop = asyncio.get_event_loop()
         render_type = await loop.run_in_executor(None, _render_with_lock)
-    except HTTPException:
-        raise  # Re-raise 409 from lock contention
     except Exception as e:
-        logger.exception("Video render failed")
-        raise HTTPException(status_code=500, detail="Render failed")
+        raise _render_error(e)
 
     return EditorRenderResponse(
         status="ok",
@@ -142,8 +179,7 @@ def stream_session_preview(
     if not project_dir:
         raise HTTPException(status_code=400, detail="Project data not available")
 
-    project = editor_service.load_project(project_dir)
-    preview_path = editor_service.generate_preview(project_dir, project)
+    preview_path = _preview_path(project_dir, session.output_path)
 
     if not preview_path or not preview_path.exists():
         raise HTTPException(status_code=404, detail="Preview not available")
@@ -172,18 +208,11 @@ def get_library_editor_data(
             detail="Project data not available. This video was generated before the editor feature was added.",
         )
 
-    project = editor_service.load_project(project_dir)
-
-    # Generate subtitle-free preview for the editor
-    editor_service.generate_preview(project_dir, project)
-
-    stream_url = f"/api/videos/{video_id}/stream"
-    preview_stream_url = f"/api/videos/{video_id}/editor/preview-stream"
-
-    return editor_service.get_editor_data(
-        project_dir, project, stream_url,
+    return _load_editor_data(
+        project_dir, Path(settings.output_dir) / video.output_filename,
+        stream_url=f"/api/videos/{video_id}/stream",
+        preview_stream_url=f"/api/videos/{video_id}/editor/preview-stream",
         video_id=video_id,
-        preview_stream_url=preview_stream_url,
     )
 
 
@@ -209,12 +238,13 @@ async def render_library_editor(
         if not project_dir:
             raise HTTPException(status_code=400, detail="Project data not available for this video")
 
-        project = editor_service.load_project(project_dir)
         output_path = Path(settings.output_dir) / video.output_filename
         user_id = video.user_id
 
         # Same key as subtitle regeneration (routes/videos.py): both rewrite this mp4.
         with project_lock(video_edit_lock_key(output_path)):
+            # Load inside the lock so we never render from a stale project.json
+            project = editor_service.load_project(project_dir)
             render_type = editor_service.render_changes(
                 project_dir, project,
                 subtitles=render_request.subtitles.model_dump() if render_request.subtitles else None,
@@ -229,11 +259,8 @@ async def render_library_editor(
     try:
         loop = asyncio.get_event_loop()
         render_type = await loop.run_in_executor(None, _render_with_lock)
-    except HTTPException:
-        raise  # Re-raise 409 from lock contention
     except Exception as e:
-        logger.exception("Video render failed")
-        raise HTTPException(status_code=500, detail="Render failed")
+        raise _render_error(e)
 
     return EditorRenderResponse(
         status="ok",
@@ -265,8 +292,7 @@ def stream_video_preview(
     if not project_dir:
         raise HTTPException(status_code=400, detail="Project data not available")
 
-    project = editor_service.load_project(project_dir)
-    preview_path = editor_service.generate_preview(project_dir, project)
+    preview_path = _preview_path(project_dir, Path(settings.output_dir) / video.output_filename)
 
     if not preview_path or not preview_path.exists():
         raise HTTPException(status_code=404, detail="Preview not available")
@@ -282,13 +308,23 @@ def search_replacement_clips(
     request: ClipSearchRequest,
     user: User = Depends(get_current_user),
 ):
-    """Search Pexels for replacement clip candidates."""
-    results = editor_service.search_clips(
-        keywords=request.keywords,
-        orientation=request.orientation,
-        count=request.count,
-    )
-    return results
+    """Replacement candidates (same no-repeat ladder as the wizard).
+
+    Clips already used in the video (``exclude``) are skipped, and clips at
+    least ``min_duration`` (the slot length) long are preferred.
+    """
+    try:
+        return editor_service.search_clips(
+            keywords=request.keywords,
+            orientation=request.orientation,
+            count=request.count,
+            min_duration=request.min_duration,
+            exclude=[c.model_dump() for c in request.exclude],
+            topic=request.topic,
+        )
+    except Exception:
+        logger.exception("Editor clip search failed")
+        raise HTTPException(status_code=502, detail="Clip search failed. Please try again.")
 
 
 # ─── Helpers ───

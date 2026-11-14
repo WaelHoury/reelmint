@@ -261,10 +261,15 @@ async def update_video_subtitles(request: Request, session_id: str, sub_request:
     def _regen_with_lock():
         with project_lock(lock_key):
             regenerate_subtitles(session, sub_request.model_dump(exclude_none=True))
-            # Re-upload updated video to R2 if enabled
+            # Re-upload updated video (+ project.json, preview) to R2 if enabled
             from app.core.config import settings as _settings
             if _settings.use_r2_storage and session.output_path:
-                _reupload_video_to_r2(session)
+                if session.project_dir_path and session.user_id:
+                    from app.api.routes.editor import _r2_upload_render_result
+                    _r2_upload_render_result(session.user_id, Path(session.output_path),
+                                             Path(session.project_dir_path))
+                else:
+                    _reupload_video_to_r2(session)
 
     try:
         loop = asyncio.get_event_loop()

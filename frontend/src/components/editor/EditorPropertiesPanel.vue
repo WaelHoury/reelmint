@@ -35,7 +35,7 @@
             <el-input-number
               :model-value="selectedClip.trim_start || 0"
               @update:model-value="updateClip('trim_start', $event)"
-              :step="0.5" :min="0" :precision="1"
+              :step="0.5" :min="0" :max="maxTrim('trim_end')" :precision="1"
               size="small"
               style="width: 100%"
             />
@@ -45,7 +45,7 @@
             <el-input-number
               :model-value="selectedClip.trim_end || 0"
               @update:model-value="updateClip('trim_end', $event)"
-              :step="0.5" :min="0" :precision="1"
+              :step="0.5" :min="0" :max="maxTrim('trim_start')" :precision="1"
               size="small"
               style="width: 100%"
             />
@@ -119,7 +119,7 @@
             <el-input-number
               :model-value="selectedSubtitle.start_time"
               @update:model-value="updateSubtitleEntry('start_time', $event)"
-              :step="0.1" :min="0" :precision="2"
+              :step="0.1" :min="0" :max="Math.max(0, selectedSubtitle.end_time - MIN_CAPTION)" :precision="2"
               size="small"
               style="width: 100%"
             />
@@ -129,7 +129,7 @@
             <el-input-number
               :model-value="selectedSubtitle.end_time"
               @update:model-value="updateSubtitleEntry('end_time', $event)"
-              :step="0.1" :min="0" :precision="2"
+              :step="0.1" :min="selectedSubtitle.start_time + MIN_CAPTION" :precision="2"
               size="small"
               style="width: 100%"
             />
@@ -192,9 +192,10 @@
           <div class="form-group">
             <label>Color</label>
             <el-color-picker
+              :key="'color-' + pickerKey"
               :model-value="subs.color"
-              @update:model-value="updateSub('color', $event)"
-              show-alpha
+              @update:model-value="updateColor('color', $event)"
+              color-format="hex"
               size="small"
             />
           </div>
@@ -202,9 +203,10 @@
           <div class="form-group">
             <label>Outline</label>
             <el-color-picker
+              :key="'outline-' + pickerKey"
               :model-value="subs.outline_color"
-              @update:model-value="updateSub('outline_color', $event)"
-              show-alpha
+              @update:model-value="updateColor('outline_color', $event)"
+              color-format="hex"
               size="small"
             />
           </div>
@@ -250,10 +252,23 @@ const fonts = [
   'Impact', 'Verdana', 'Georgia', 'Times New Roman',
 ]
 
+// Landscape fallback only; editor-data sends each preset's values for this
+// video's orientation (portrait/square captions use a different base style)
 const PRESETS = {
   youtube: { font: 'Arial', font_size: 52, color: '#FFFFFF', outline_color: '#000000', position: 'bottom' },
   tiktok: { font: 'Montserrat-Bold', font_size: 64, color: '#FFFFFF', outline_color: '#000000', position: 'center' },
   minimal: { font: 'Helvetica', font_size: 44, color: '#FFFFFF', outline_color: '#000000', position: 'bottom' },
+}
+
+// Shortest clip a trim may leave / shortest caption (match the server's checks)
+const MIN_CLIP = 0.5
+const MIN_CAPTION = 0.05
+
+// Bumped to re-sync a colour picker after it was cleared
+const pickerKey = ref(0)
+
+function presetValues(name) {
+  return props.editorData?.subtitles?.presets?.[name] || PRESETS[name] || PRESETS.youtube
 }
 
 const subs = computed(() => props.editorData?.subtitles || {})
@@ -274,8 +289,27 @@ function updateSub(key, value) {
 }
 
 function applyPreset(preset) {
-  const settings = { style: preset, ...PRESETS[preset] }
+  const settings = { style: preset, ...presetValues(preset) }
   emit('update:subtitles', settings)
+}
+
+// Clearing a picker emits null: fall back to the preset's colour instead of sending it
+function updateColor(key, value) {
+  if (value) {
+    emit('update:subtitles', { [key]: value.toUpperCase() })
+    return
+  }
+  const fallback = presetValues(subs.value.style)[key] || subs.value[key]
+  emit('update:subtitles', { [key]: fallback }, { reset: [key] })
+  pickerKey.value++
+}
+
+// Upper bound for one trim given the other, leaving at least MIN_CLIP seconds
+function maxTrim(otherKey) {
+  const clip = selectedClip.value
+  if (!clip) return 0
+  const max = (clip.duration_seconds || 0) - (clip[otherKey] || 0) - MIN_CLIP
+  return Math.max(0, Math.floor(max * 10) / 10)
 }
 
 function updateAudio(key, value) {
@@ -322,27 +356,27 @@ function formatTime(seconds) {
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  border-bottom: 1px solid #2a2a4a;
-  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid var(--ce-border-subtle);
+  background: var(--ce-surface-2);
   flex-shrink: 0;
 }
 
 .panel-title {
   font-size: 11px;
   font-weight: 600;
-  color: #c0c0e0;
+  color: var(--ce-text-primary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .close-btn {
-  color: #8a8aaa !important;
+  color: var(--ce-text-muted) !important;
   font-size: 18px;
   padding: 0 4px !important;
   transition: color 0.15s;
 }
 .close-btn:hover {
-  color: #e0e0e0 !important;
+  color: var(--ce-text-primary) !important;
 }
 
 .panel-body {
@@ -357,7 +391,7 @@ function formatTime(seconds) {
 .form-group label {
   display: block;
   font-size: 11px;
-  color: #8a8aaa;
+  color: var(--ce-text-label);
   margin-bottom: 6px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -372,7 +406,7 @@ function formatTime(seconds) {
 .info-label {
   display: block;
   font-size: 11px;
-  color: #6a6a8a;
+  color: var(--ce-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 2px;
@@ -381,19 +415,19 @@ function formatTime(seconds) {
 
 .info-value {
   font-size: 13px;
-  color: #c0c0e0;
+  color: var(--ce-text-primary);
   word-break: break-word;
 }
 
 .info-value.small {
   font-size: 12px;
-  color: #a0a0c0;
+  color: var(--ce-text-secondary);
 }
 
 .trim-hint,
 .render-hint {
   font-size: 11px;
-  color: #6a6a8a;
+  color: var(--ce-text-muted);
   margin: 6px 0 0;
   font-style: italic;
 }
@@ -406,7 +440,7 @@ function formatTime(seconds) {
 
 .empty-state-text {
   font-size: 12px;
-  color: #6a6a8a;
+  color: var(--ce-text-muted);
   text-align: center;
   margin: 0;
   line-height: 1.5;
@@ -414,7 +448,7 @@ function formatTime(seconds) {
 
 /* Subtitle settings section (always visible) */
 .subtitle-settings-section {
-  border-top: 1px solid #2a2a4a;
+  border-top: 1px solid var(--ce-border-subtle);
   margin-top: auto;
 }
 
@@ -423,20 +457,20 @@ function formatTime(seconds) {
   align-items: center;
   justify-content: space-between;
   padding: 10px 16px;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--ce-surface-2);
   cursor: pointer;
   user-select: none;
   transition: background 0.15s;
 }
 
 .section-header:hover {
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--ce-surface-3);
 }
 
 .section-title {
   font-size: 11px;
   font-weight: 600;
-  color: #c0c0e0;
+  color: var(--ce-text-primary);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -444,68 +478,16 @@ function formatTime(seconds) {
 .collapse-icon {
   transition: transform 0.2s;
   font-size: 12px;
-  color: #8a8aaa;
+  color: var(--ce-text-label);
 }
 
 .collapse-icon.collapsed {
   transform: rotate(-90deg);
 }
 
-/* Dark theme overrides for Element Plus components */
-.properties-panel :deep(.el-select) {
-  width: 100%;
-}
-
-.properties-panel :deep(.el-input__wrapper) {
-  background-color: #22223a !important;
-  border-color: #3a3a5a !important;
-  box-shadow: none !important;
-}
-
-.properties-panel :deep(.el-input__inner) {
-  color: #e0e0e0 !important;
-}
-
-.properties-panel :deep(.el-textarea__inner) {
-  background-color: #22223a !important;
-  border-color: #3a3a5a !important;
-  color: #e0e0e0 !important;
-  box-shadow: none !important;
-}
-
-.properties-panel :deep(.el-slider__runway) {
-  background-color: #2a2a4a;
-}
-
-.properties-panel :deep(.el-slider__bar) {
-  background-color: #A78BFA;
-}
-
-.properties-panel :deep(.el-radio-button__inner) {
-  background-color: #22223a !important;
-  border-color: #3a3a5a !important;
-  color: #a0a0c0 !important;
-}
-
-.properties-panel :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
-  background-color: #6D28D9 !important;
-  border-color: #6D28D9 !important;
-  color: #fff !important;
-}
-
-.properties-panel :deep(.el-switch__core) {
-  background-color: #3a3a5a;
-}
-
-.properties-panel :deep(.el-divider) {
-  border-color: #2a2a4a;
-}
-
+/* Element controls use the global theme; only layout tweaks here */
+.properties-panel :deep(.el-select),
 .properties-panel :deep(.el-input-number) {
   width: 100%;
-}
-
-.properties-panel :deep(.el-input-number .el-input__wrapper) {
-  background-color: #22223a !important;
 }
 </style>

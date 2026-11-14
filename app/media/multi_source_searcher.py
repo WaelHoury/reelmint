@@ -35,21 +35,24 @@ class MultiSourceSearcher:
 
     def search(self, keywords: List[str], min_duration: float = 5.0,
                max_results: int = 20,
-               orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> list:
+               orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any',
+               page: int = 1) -> list:
         """Search for videos across all enabled sources.
 
         Searches Pexels and Pixabay in parallel when Pixabay is enabled.
         Results are interleaved so both providers stay visible near the top.
-        Pixabay failures are non-fatal.
+        Pixabay failures are non-fatal. ``page`` (1-based) pages every source.
         """
+        # Only pass ``page`` when paging, so searchers without it keep working.
+        extra = {'page': int(page)} if page and int(page) > 1 else {}
         if not self.enable_pixabay:
-            return self.pexels.search(keywords, min_duration, max_results, orientation)
+            return self.pexels.search(keywords, min_duration, max_results, orientation, **extra)
 
         with ThreadPoolExecutor(max_workers=2) as pool:
             pexels_future = pool.submit(
-                self.pexels.search, keywords, min_duration, max_results, orientation)
+                self.pexels.search, keywords, min_duration, max_results, orientation, **extra)
             pixabay_future = pool.submit(
-                self.pixabay.search_videos, keywords, min_duration, max_results, orientation)
+                self.pixabay.search_videos, keywords, min_duration, max_results, orientation, **extra)
 
             pexels_error = None
             try:

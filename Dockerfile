@@ -1,4 +1,4 @@
-# AI Video Maker - Docker Image
+# Reelmint - Docker Image
 # Supports both API server and RQ worker
 
 FROM python:3.11-slim

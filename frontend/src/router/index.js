@@ -28,6 +28,22 @@ const routes = [
     component: () => import('../views/MyVideos.vue'),
   },
   {
+    path: '/autopilot',
+    name: 'autopilot',
+    component: () => import('../views/BatchListPage.vue'),
+  },
+  {
+    path: '/autopilot/new',
+    name: 'autopilot-new',
+    component: () => import('../views/BatchCreatePage.vue'),
+  },
+  {
+    path: '/autopilot/:id',
+    name: 'autopilot-detail',
+    component: () => import('../views/BatchDetailPage.vue'),
+    props: true,
+  },
+  {
     path: '/voices',
     name: 'voices',
     component: () => import('../views/VoicesPage.vue'),

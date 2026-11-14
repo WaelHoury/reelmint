@@ -1,1 +1,1 @@
-"""AI Video Maker application package."""
+"""Reelmint application package."""

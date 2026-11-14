@@ -1,5 +1,5 @@
 <template>
-  <div class="video-editor" v-loading="isLoading" element-loading-background="rgba(17,17,27,0.8)">
+  <div class="video-editor" v-loading="isLoading">
     <!-- Toolbar -->
     <div class="editor-toolbar">
       <div class="toolbar-left">
@@ -82,6 +82,9 @@
       v-model="clipSearchVisible"
       :initial-keywords="clipSearchKeywords"
       :orientation="editorData?.orientation || 'landscape'"
+      :min-duration="clipSearchMinDuration"
+      :exclude="clipSearchExclude"
+      :topic="editorData?.title || ''"
       @select="onClipReplaced"
     />
   </div>
@@ -133,6 +136,11 @@ const timelineZoom = ref(1)
 const pendingSubtitles = ref(false)
 const pendingAudio = ref(false)
 const pendingClips = ref(new Set())
+// Subtitle fields the user explicitly set (the rest follow the style preset)
+const subtitleOverrides = ref(new Set())
+// Caption text/timing edited: only then are entries sent (keeps word timing)
+const subtitleEntriesEdited = ref(false)
+const SUBTITLE_OVERRIDE_KEYS = ['font', 'font_size', 'color', 'outline_color', 'position']
 
 const hasChanges = computed(() => {
   return pendingSubtitles.value || pendingAudio.value || pendingClips.value.size > 0
@@ -142,6 +150,8 @@ const hasChanges = computed(() => {
 const clipSearchVisible = ref(false)
 const clipSearchKeywords = ref([])
 const clipSearchIndex = ref(null)
+const clipSearchMinDuration = ref(0)
+const clipSearchExclude = ref([])
 
 // Video preview ref
 const videoPreview = ref(null)
@@ -160,10 +170,12 @@ const streamUrl = computed(() => {
   return getVideoPreviewStreamUrl(props.videoId) + `?_t=${t}`
 })
 
-// Load editor data
-async function loadEditorData() {
-  isLoading.value = true
-  errorMessage.value = ''
+// Load editor data. silent: refresh after a render without the full-page overlay
+async function loadEditorData({ silent = false } = {}) {
+  if (!silent) {
+    isLoading.value = true
+    errorMessage.value = ''
+  }
   try {
     let response
     if (isSessionBased.value) {
@@ -173,11 +185,17 @@ async function loadEditorData() {
     }
     editorData.value = response.data
     duration.value = editorData.value.duration_seconds || 0
+    subtitleOverrides.value = new Set(editorData.value.subtitles?.overrides || [])
+    subtitleEntriesEdited.value = false
   } catch (err) {
     const detail = err.response?.data?.detail || err.message
-    errorMessage.value = detail
+    if (silent) {
+      ElMessage.warning(`Rendered, but the editor could not refresh: ${detail}`)
+    } else {
+      errorMessage.value = detail
+    }
   } finally {
-    isLoading.value = false
+    if (!silent) isLoading.value = false
   }
 }
 
@@ -199,9 +217,20 @@ function onSeek(time) {
   videoPreview.value?.seekTo(time)
 }
 
-function onSubtitleSettingsChange(settings) {
+function onSubtitleSettingsChange(settings, { reset = [] } = {}) {
   if (!editorData.value) return
   editorData.value.subtitles = { ...editorData.value.subtitles, ...settings }
+  const overrides = new Set(subtitleOverrides.value)
+  if ('style' in settings) {
+    // A preset was applied: every field now follows that preset
+    overrides.clear()
+  } else {
+    for (const key of Object.keys(settings)) {
+      if (SUBTITLE_OVERRIDE_KEYS.includes(key)) overrides.add(key)
+    }
+  }
+  for (const key of reset) overrides.delete(key)
+  subtitleOverrides.value = overrides
   pendingSubtitles.value = true
 }
 
@@ -210,6 +239,7 @@ function onSubtitleEntryChange({ index, entry }) {
   const entries = [...editorData.value.subtitles.entries]
   entries[index] = { ...entries[index], ...entry }
   editorData.value.subtitles.entries = entries
+  subtitleEntriesEdited.value = true
   pendingSubtitles.value = true
 }
 
@@ -244,6 +274,12 @@ function onOpenClipSearch(clipIndex) {
   if (clip) {
     clipSearchKeywords.value = clip.keywords || []
     clipSearchIndex.value = clipIndex
+    // Slot length: the replacement should cover it without a freeze-frame
+    clipSearchMinDuration.value = clip.duration_seconds || 0
+    // Never offer footage the video's other clips already use
+    clipSearchExclude.value = (editorData.value.clips || [])
+      .filter((c, i) => i !== clipIndex && c.video_id)
+      .map(c => ({ video_id: String(c.video_id), provider: c.provider || 'Pexels' }))
     clipSearchVisible.value = true
   }
 }
@@ -255,7 +291,10 @@ function onClipReplaced(result) {
   clips[idx] = {
     ...clips[idx],
     video_id: result.video_id,
-    keywords: clipSearchKeywords.value,
+    provider: result.provider || 'Pexels',
+    media_type: result.media_type || 'video',
+    // The keywords the user actually searched with
+    keywords: result.keywords?.length ? result.keywords : clipSearchKeywords.value,
     _replaced: true,
   }
   editorData.value.clips = clips
@@ -271,16 +310,13 @@ async function handleRender() {
 
   if (pendingSubtitles.value) {
     const s = editorData.value.subtitles
-    payload.subtitles = {
-      enabled: s.enabled,
-      style: s.style,
-      font: s.font,
-      font_size: s.font_size,
-      color: s.color,
-      outline_color: s.outline_color,
-      position: s.position,
-      entries: s.entries || null,
+    payload.subtitles = { enabled: s.enabled, style: s.style }
+    // Only the fields the user changed; the rest come from the preset
+    for (const key of subtitleOverrides.value) {
+      if (s[key] !== null && s[key] !== undefined && s[key] !== '') payload.subtitles[key] = s[key]
     }
+    // Entries only when caption text/timing changed (keeps word timing otherwise)
+    if (subtitleEntriesEdited.value && s.entries) payload.subtitles.entries = s.entries
   }
 
   if (pendingAudio.value) {
@@ -295,8 +331,10 @@ async function handleRender() {
       const clip = editorData.value.clips[idx]
       return {
         index: idx,
-        keywords: clip.keywords,
+        keywords: clip.keywords || [],
         video_id: clip.video_id,
+        provider: clip.provider || null,
+        media_type: clip.media_type || null,
         trim_start: clip.trim_start || 0,
         trim_end: clip.trim_end || 0,
       }
@@ -310,15 +348,20 @@ async function handleRender() {
 
     ElMessage.success(data.message || 'Video rendered successfully')
 
-    // Refresh video
-    videoKey.value = Date.now()
-
     // Clear changes
     pendingSubtitles.value = false
     pendingAudio.value = false
     pendingClips.value = new Set()
+
+    // Reload so clip/caption times match the new render, then refresh video
+    await loadEditorData({ silent: true })
+    videoKey.value = Date.now()
   } catch (err) {
-    ElMessage.error(err.response?.data?.detail || 'Render failed')
+    if (err.response?.status === 429) {
+      ElMessage.error('Too many renders, wait a minute')
+    } else {
+      ElMessage.error(err.response?.data?.detail || 'Render failed')
+    }
   } finally {
     isRendering.value = false
   }
@@ -339,32 +382,12 @@ onMounted(() => {
 
 <style scoped>
 .video-editor {
-  /* Color tokens */
-  --bg-primary: #1a1a2e;
-  --bg-secondary: #16162a;
-  --bg-tertiary: #111122;
-  --bg-surface: #1e1e36;
-  --bg-input: #22223a;
-  --border-primary: #2a2a4a;
-  --border-secondary: #22223a;
-  --border-active: #3a3a5a;
-  --text-primary: #e0e0e0;
-  --text-secondary: #c0c0e0;
-  --text-muted: #a0a0c0;
-  --text-label: #8a8aaa;
-  --text-dim: #6a6a8a;
-  --accent-primary: #A78BFA;
-  --accent-primary-dark: #6D28D9;
-  --accent-green: #67c23a;
-  --accent-orange: #e6a23c;
-  --accent-purple: #A78BFA;
-  --accent-red: #ff4757;
-
+  /* All colours come from the app theme (assets/styles/theme.css) */
   position: fixed;
   inset: 0;
   z-index: 200;
-  background: var(--bg-primary);
-  color: var(--text-primary);
+  background: var(--ce-bg-base);
+  color: var(--ce-text-primary);
   display: grid;
   grid-template-rows: 52px 1fr 230px;
   grid-template-columns: 1fr 320px;
@@ -375,8 +398,8 @@ onMounted(() => {
 /* Toolbar */
 .editor-toolbar {
   grid-column: 1 / -1;
-  background: linear-gradient(180deg, var(--bg-secondary) 0%, #13132a 100%);
-  border-bottom: 1px solid var(--border-primary);
+  background: var(--ce-surface-1);
+  border-bottom: 1px solid var(--ce-border-subtle);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -390,17 +413,17 @@ onMounted(() => {
 }
 
 .back-btn {
-  color: var(--text-muted) !important;
+  color: var(--ce-text-secondary) !important;
   transition: color 0.15s;
 }
 .back-btn:hover {
-  color: #fff !important;
+  color: var(--ce-text-primary) !important;
 }
 
 .editor-title {
   font-size: 15px;
-  font-weight: 500;
-  color: var(--text-primary);
+  color: var(--ce-text-primary);
+  font-weight: 600;
   margin: 0;
   max-width: 400px;
   overflow: hidden;
@@ -426,15 +449,17 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: var(--bg-tertiary);
+  background:
+    radial-gradient(ellipse 70% 60% at 50% 40%, var(--ce-accent-glow) 0%, transparent 70%),
+    var(--ce-bg-base);
   overflow: hidden;
 }
 
 .properties-area {
   grid-row: 2;
   grid-column: 2;
-  background: var(--bg-primary);
-  border-left: 1px solid var(--border-primary);
+  background: var(--ce-surface-1);
+  border-left: 1px solid var(--ce-border-subtle);
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -443,8 +468,8 @@ onMounted(() => {
 .timeline-area {
   grid-row: 3;
   grid-column: 1 / -1;
-  background: var(--bg-surface);
-  border-top: 1px solid var(--border-primary);
+  background: var(--ce-timeline-bg);
+  border-top: 1px solid var(--ce-border-subtle);
   overflow: hidden;
 }
 
@@ -457,19 +482,4 @@ onMounted(() => {
   justify-content: center;
 }
 
-/* Dark theme overrides for Element Plus */
-.video-editor :deep(.el-loading-mask) {
-  background-color: rgba(17, 17, 27, 0.8);
-}
-.video-editor :deep(.el-tag--warning) {
-  background-color: rgba(230, 162, 60, 0.15);
-  border-color: rgba(230, 162, 60, 0.3);
-  color: var(--accent-orange);
-}
-.video-editor :deep(.el-button--primary) {
-  --el-button-bg-color: var(--accent-primary-dark);
-  --el-button-border-color: var(--accent-primary-dark);
-  --el-button-hover-bg-color: #7C3AED;
-  --el-button-hover-border-color: #7C3AED;
-}
 </style>

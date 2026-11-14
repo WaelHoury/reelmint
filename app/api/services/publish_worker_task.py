@@ -2,8 +2,10 @@
 
 import logging
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
+from typing import Optional
+from zoneinfo import ZoneInfo
 
 from redis import Redis
 
@@ -12,9 +14,126 @@ from app.db.base import SessionLocal
 from app.db.models import PublishJob, SocialAccount, Video
 from app.api.services.token_encryption import encrypt_token, decrypt_token
 from app.social import youtube
-from app.social.youtube import AuthError, RetryableYouTubeError, YouTubeError
+from app.social.youtube import AuthError, QuotaExceededError, RetryableYouTubeError, YouTubeError
 
 logger = logging.getLogger(__name__)
+
+PUBLISH_QUEUE = "video_publish"
+PUBLISH_TASK = "app.api.services.publish_worker_task.execute_publish_job"
+QUOTA_ERROR_CODE = "quota_exceeded"
+# YouTube Data API quotas reset at midnight Pacific time; retry a few minutes after.
+QUOTA_RESET_TZ = "America/Los_Angeles"
+QUOTA_RESET_AT = time(0, 5)  # local Pacific wall-clock time
+# A scheduled publishAt must be in the future when the upload finally happens.
+PUBLISH_AT_MIN_LEAD = timedelta(minutes=2)
+PUBLISH_AT_FALLBACK = timedelta(minutes=15)
+
+
+def next_quota_reset(now: Optional[datetime] = None) -> datetime:
+    """Aware UTC time of the next YouTube quota reset (00:00 Pacific) plus 5 minutes.
+
+    DST-safe: the wall-clock time 00:05 is resolved in America/Los_Angeles for
+    the right date, so it is 07:05 or 08:05 UTC depending on the season.
+    ``now`` may be naive (treated as UTC) or aware.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    tz = ZoneInfo(QUOTA_RESET_TZ)
+    local_now = now.astimezone(tz)
+    reset_wall = QUOTA_RESET_AT
+    candidate = datetime.combine(local_now.date(), reset_wall, tzinfo=tz)
+    if candidate <= local_now:
+        candidate = datetime.combine(local_now.date() + timedelta(days=1), reset_wall, tzinfo=tz)
+    return candidate.astimezone(timezone.utc)
+
+
+def is_quota_error(exc: Exception) -> bool:
+    """YouTube quota/upload-limit error (by type, or our error text mentions quota)."""
+    if isinstance(exc, QuotaExceededError):
+        return True
+    return isinstance(exc, YouTubeError) and "quota" in str(exc).lower()
+
+
+def _batch_item_for_job(db, job: PublishJob):
+    """(BatchItem, Batch) that started this publish job, or (None, None)."""
+    from app.db.models import Batch, BatchItem
+    item = db.query(BatchItem).filter(BatchItem.publish_job_id == job.id).first()
+    if item is None:
+        return None, None
+    return item, db.get(Batch, item.batch_id)
+
+
+def _is_hands_off(db, job: PublishJob) -> bool:
+    try:
+        _item, batch = _batch_item_for_job(db, job)
+        return bool(batch is not None and batch.hands_off)
+    except Exception:
+        logger.exception("Could not look up the batch for publish job %s", job.id)
+        return False
+
+
+def _ensure_future_publish_at(db, job: PublishJob) -> None:
+    """Move a scheduled publishAt that has passed (e.g. after a quota wait) into the future."""
+    payload = dict(job.request_payload or {})
+    raw = payload.get("publish_at")
+    if not raw:
+        return
+    try:
+        when = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if when > now + PUBLISH_AT_MIN_LEAD:
+        return
+    new_when = now + PUBLISH_AT_FALLBACK
+    payload["publish_at"] = new_when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    job.request_payload = payload
+    item, _batch = _batch_item_for_job(db, job)
+    if item is not None:
+        item.scheduled_publish_at = new_when.replace(tzinfo=None)
+    db.commit()
+    logger.info("Publish job %s: scheduled time had passed; publishing at %s instead",
+                job.id, payload["publish_at"])
+
+
+def _handle_quota_error(db, job: PublishJob, exc: Exception, redis_conn: Redis,
+                        now: Optional[datetime] = None) -> None:
+    """Hands-off batches wait for the quota reset and retry; everything else fails clearly."""
+    if _is_hands_off(db, job):
+        if now is None:
+            now = datetime.now(timezone.utc)
+        elif now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        reset = next_quota_reset(now)
+        delay = reset - now
+        _update_job(
+            db, job,
+            status="queued",
+            error_code=QUOTA_ERROR_CODE,
+            error_message=str(exc),
+            provider_status="Waiting for YouTube quota reset",
+            next_retry_at=reset.replace(tzinfo=None),
+        )
+        from rq import Queue
+        Queue(PUBLISH_QUEUE, connection=redis_conn).enqueue_in(
+            max(delay, timedelta(seconds=1)), PUBLISH_TASK, job.id, job_timeout="30m",
+        )
+        logger.warning("Publish job %s: YouTube quota exceeded; retrying at %s UTC",
+                       job.id, reset.strftime("%Y-%m-%d %H:%M"))
+        return
+    _update_job(
+        db, job,
+        status="failed",
+        error_code=QUOTA_ERROR_CODE,
+        error_message=(
+            "YouTube's daily upload quota is used up. It resets at midnight Pacific time; "
+            f"retry after that. ({exc})"
+        )[:1000],
+    )
 
 
 def _resolve_video_path(video: Video) -> tuple[Path, bool]:
@@ -117,6 +236,7 @@ def execute_publish_job(publish_job_id: int):
             return
 
         _update_job(db, job, status="uploading")
+        _ensure_future_publish_at(db, job)
 
         # Resolve video file
         video_path, is_temp = _resolve_video_path(video)
@@ -145,8 +265,15 @@ def execute_publish_job(publish_job_id: int):
             platform_post_url=result.get("platform_post_url"),
             provider_status=result.get("provider_status", "uploaded"),
             published_at=datetime.utcnow(),
+            error_code=None,
+            error_message=None,
+            next_retry_at=None,
         )
         logger.info("Publish job %s completed: %s", job.id, result.get("platform_post_url"))
+
+    except QuotaExceededError as e:
+        logger.warning("Publish job %s quota error: %s", publish_job_id, e)
+        _handle_quota_error(db, job, e, redis_conn)
 
     except AuthError as e:
         logger.warning("Publish job %s auth error: %s", publish_job_id, e)
@@ -159,7 +286,9 @@ def execute_publish_job(publish_job_id: int):
 
     except RetryableYouTubeError as e:
         logger.warning("Publish job %s retryable error: %s", publish_job_id, e)
-        if job.retry_count < job.max_retries:
+        if is_quota_error(e):
+            _handle_quota_error(db, job, e, redis_conn)
+        elif job.retry_count < job.max_retries:
             delay = min(2 ** job.retry_count * 30, 3600)
             _update_job(
                 db, job,
@@ -170,16 +299,24 @@ def execute_publish_job(publish_job_id: int):
             )
             # Re-enqueue with delay
             from rq import Queue
-            queue = Queue("video_publish", connection=redis_conn)
+            queue = Queue(PUBLISH_QUEUE, connection=redis_conn)
             queue.enqueue_in(
                 timedelta(seconds=delay),
-                "app.api.services.publish_worker_task.execute_publish_job",
+                PUBLISH_TASK,
                 publish_job_id,
                 job_timeout="30m",
             )
             logger.info("Publish job %s re-enqueued with %ss delay (retry #%s)", job.id, delay, job.retry_count)
         else:
             _update_job(db, job, status="failed", error_code="max_retries", error_message=str(e))
+
+    except YouTubeError as e:
+        if is_quota_error(e):
+            logger.warning("Publish job %s quota error: %s", publish_job_id, e)
+            _handle_quota_error(db, job, e, redis_conn)
+        else:
+            logger.exception("Publish job %s failed: %s", publish_job_id, e)
+            _update_job(db, job, status="failed", error_code="youtube_error", error_message=str(e))
 
     except Exception as e:
         logger.exception("Publish job %s failed: %s", publish_job_id, e)

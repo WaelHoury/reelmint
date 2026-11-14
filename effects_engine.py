@@ -509,7 +509,8 @@ class EffectsEngine:
                        subtitle_path: Path = None,
                        subscribe_video: Path = None,
                        subscribe_params: dict = None,
-                       fade_duration: float = 0) -> Path:
+                       fade_duration: float = 0,
+                       audio_pad_duration: float = 0) -> Path:
         """Mux audio and apply overlay + subtitles + fade in a single FFmpeg pass.
 
         Combines what used to be 3-4 separate re-encode passes into one.
@@ -525,6 +526,10 @@ class EffectsEngine:
                               margin_bottom, chromakey_color, chromakey_similarity,
                               chromakey_blend)
             fade_duration: Fade-to-black duration in seconds (0 = no fade)
+            audio_pad_duration: Seconds of silence appended to the audio so an
+                outro (freeze-frame) longer than the narration is not cut by
+                -shortest (0 = no padding). Same meaning as in
+                concat_and_finalize, so re-renders match the first render.
 
         Returns:
             Path to output video
@@ -536,7 +541,8 @@ class EffectsEngine:
         needs_overlay = subscribe_video is not None and Path(subscribe_video).exists()
         needs_subtitles = subtitle_path is not None
         needs_fade = fade_duration > 0
-        needs_effects = needs_overlay or needs_subtitles or needs_fade
+        needs_pad = (audio_pad_duration or 0) > 0
+        needs_effects = needs_overlay or needs_subtitles or needs_fade or needs_pad
 
         if not needs_effects:
             # Fast path: just mux audio, no re-encoding
@@ -555,6 +561,17 @@ class EffectsEngine:
             return output_path
 
         video_duration = self._get_duration(video_no_audio)
+
+        # Output length with -shortest = min(video, padded audio). The fade
+        # must land in the last fade_duration seconds of the actual output.
+        final_duration = video_duration
+        try:
+            audio_duration = self._get_duration(audio_path)
+            if audio_duration > 0:
+                final_duration = min(video_duration,
+                                     audio_duration + max(0.0, audio_pad_duration or 0))
+        except Exception:
+            pass
 
         # --- Build inputs ---
         cmd = [self.ffmpeg_path]
@@ -598,7 +615,7 @@ class EffectsEngine:
         if needs_subtitles:
             post_filters.append(f"ass=filename={self._escape_filter_path(subtitle_path)}")
         if needs_fade:
-            fade_start = max(0, video_duration - fade_duration)
+            fade_start = max(0, final_duration - fade_duration)
             post_filters.append(f"fade=t=out:st={fade_start:.3f}:d={fade_duration}")
 
         # Combine into complete video filter
@@ -609,18 +626,22 @@ class EffectsEngine:
                 video_filter = overlay_chain + "[outv]"
         else:
             # No overlay — chain directly from input
-            video_filter = "[0:v]" + ",".join(post_filters) + "[outv]"
+            video_filter = "[0:v]" + (",".join(post_filters) or "null") + "[outv]"
 
-        # --- Build audio filter ---
+        # --- Build audio filter: optional silence padding (outro) + fade ---
+        audio_filters = []
+        if needs_pad:
+            audio_filters.append(f"apad=pad_dur={audio_pad_duration:.3f}")
         if needs_fade:
-            fade_start = max(0, video_duration - fade_duration)
-            filter_complex = video_filter + f";[1:a]afade=t=out:st={fade_start:.3f}:d={fade_duration}[outa]"
+            fade_start = max(0, final_duration - fade_duration)
+            audio_filters.append(f"afade=t=out:st={fade_start:.3f}:d={fade_duration}")
+        if audio_filters:
+            filter_complex = video_filter + ";[1:a]" + ",".join(audio_filters) + "[outa]"
             audio_map = ['-map', '[outa]']
-            audio_codec = ['-c:a', 'aac', '-b:a', '192k']
         else:
             filter_complex = video_filter
             audio_map = ['-map', '1:a']
-            audio_codec = ['-c:a', 'aac', '-b:a', '192k']
+        audio_codec = ['-c:a', 'aac', '-b:a', '192k']
 
         # --- Assemble final command ---
         cmd.extend([
@@ -632,6 +653,7 @@ class EffectsEngine:
             '-pix_fmt', 'yuv420p',
             '-threads', str(settings.ffmpeg_threads),
             *audio_codec,
+            '-shortest',
             '-movflags', '+faststart',
             '-y', str(output_path)
         ])
@@ -683,7 +705,8 @@ class EffectsEngine:
                 subtitle_path=subtitle_path,
                 subscribe_video=subscribe_video,
                 subscribe_params=subscribe_params,
-                fade_duration=fade_duration
+                fade_duration=fade_duration,
+                audio_pad_duration=audio_pad_duration,
             )
 
         needs_overlay = subscribe_video is not None and Path(subscribe_video).exists()

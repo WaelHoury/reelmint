@@ -3,10 +3,12 @@
 import json
 import os
 import re
+from difflib import SequenceMatcher
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from token_counter import TokenCounter
+from script_variety import BANNED_PHRASES, has_banned_opener, pick_angle, variety_block
 
 
 def extract_json_payload(content: str) -> str:
@@ -59,6 +61,24 @@ def extract_clips_list(data) -> list:
 
 
 # Function words that must never be promoted to stock-footage keywords
+def seconds_per_clip(total_seconds: float) -> float:
+    """How long each shot lasts, which sets how many stock clips a video needs.
+
+    SECONDS_PER_CLIP (default 5) controls pacing; fewer, longer shots mean
+    fewer downloads. Videos over a minute use at least 6 s per shot.
+    """
+    try:
+        base = float(os.getenv("SECONDS_PER_CLIP", "5"))
+    except ValueError:
+        base = 5.0
+    base = min(max(base, 2.0), 15.0)
+    return max(base, 6.0) if total_seconds > 60 else base
+
+
+def clip_count_for(total_seconds: float) -> int:
+    return max(2, int(round(total_seconds / seconds_per_clip(total_seconds))))
+
+
 KEYWORD_STOPWORDS = frozenset({
     'a', 'an', 'the', 'and', 'or', 'but', 'nor', 'so', 'yet', 'for', 'of', 'to',
     'in', 'on', 'at', 'by', 'up', 'as', 'is', 'it', 'its', 'be', 'are', 'was',
@@ -195,14 +215,18 @@ class ScenePlanner:
 
     # Style-specific tone/voice instructions - kept concise to avoid LLM confusion
     NARRATION_STYLES = {
+        # A style sets the voice, tone and devices only. How each video opens,
+        # how it is structured and how it ends come from a per-video angle
+        # (script_variety.pick_angle), so two videos in one style never share
+        # the same opening.
         'viral': {
-            'voice': 'a YouTube shorts scriptwriter who hooks viewers with specific, fascinating facts',
+            'voice': 'a short-form scriptwriter who hooks viewers with specific, surprising facts',
             'tone': 'telling a story to a friend — confident, punchy, no fluff',
             'rules': (
-                '- Hook first: open with a shocking fact or bold claim, no warm-up\n'
+                '- Hook in the first sentence, no warm-up\n'
                 '- Every sentence = new info (never repeat or rephrase)\n'
                 '- Mix short punches with longer sentences, vary your rhythm\n'
-                '- End with a memorable line that sticks'
+                '- Prefer concrete numbers, names and places over vague claims'
             ),
         },
 
@@ -210,10 +234,10 @@ class ScenePlanner:
             'voice': 'an expert teacher who makes complex topics simple',
             'tone': 'clear, structured, insightful — like a great explainer video',
             'rules': (
-                '- Open with what the viewer will learn\n'
-                '- Build understanding step by step in logical order\n'
-                '- Use analogies to make complex ideas click\n'
-                '- End with a key takeaway they can remember'
+                '- Build understanding in a logical order\n'
+                '- Use one strong analogy to make the hardest idea click\n'
+                '- Define any term the first time you use it, in plain words\n'
+                '- Precise facts over generalities'
             ),
         },
 
@@ -221,10 +245,10 @@ class ScenePlanner:
             'voice': 'a comedian who makes every topic hilarious',
             'tone': 'a funny friend roasting the topic — sarcastic but accurate',
             'rules': (
-                '- Open with a joke or absurd observation\n'
-                '- Set up expectations, then subvert with a punchline\n'
-                '- Exaggerate for effect, keep facts accurate\n'
-                '- End with a big punchline or callback'
+                '- Set up expectations, then subvert them with a punchline\n'
+                '- Exaggerate for effect, keep the facts accurate\n'
+                '- Use specific, visual comparisons rather than generic jokes\n'
+                '- Land at least one callback to an earlier joke'
             ),
         },
 
@@ -232,10 +256,10 @@ class ScenePlanner:
             'voice': 'a master storyteller who turns any topic into a narrative',
             'tone': 'a campfire story — vivid, emotional, with drama',
             'rules': (
-                '- Open by setting a scene or introducing a character\n'
+                '- Give the story a person, place or object to follow\n'
                 '- Build tension with a problem or mystery\n'
                 '- Use vivid sensory details — what things look, sound, feel like\n'
-                '- End with a satisfying resolution'
+                '- Show, don\'t summarise'
             ),
         },
 
@@ -243,10 +267,10 @@ class ScenePlanner:
             'voice': 'an inspiring coach who empowers viewers to act',
             'tone': 'a pep talk — energetic, direct, uplifting',
             'rules': (
-                '- Open with a bold statement or challenge\n'
-                '- Acknowledge the struggle, then build momentum\n'
+                '- Acknowledge the struggle honestly, then build momentum\n'
                 '- Speak directly to "you" — make it personal\n'
-                '- End with a clear call to action'
+                '- Use one concrete example instead of abstract advice\n'
+                '- Avoid motivational clichés; be specific'
             ),
         },
 
@@ -254,11 +278,10 @@ class ScenePlanner:
             'voice': 'a curious overthinker having a late-night epiphany',
             'tone': 'a friend at 2 AM who just had a wild thought — relaxed, genuine, mind-wandering',
             'rules': (
-                '- Open with the premise casually ("Okay but like... is X really Y?")\n'
                 '- Run with the idea — don\'t debunk it, explore it\n'
-                '- Think out loud: "and like...", "okay but then...", "which means..."\n'
+                '- Think out loud in your own words; vary how each sentence starts\n'
                 '- Use everyday comparisons, not jargon\n'
-                '- End with the thought that hits hardest'
+                '- Follow the logic one step further than feels comfortable'
             ),
         },
     }
@@ -377,7 +400,7 @@ OUTPUT FORMAT (JSON only):
 
 NARRATION: ~3 words/second. No filler phrases. Vary sentence structure.
 
-CLIPS: One per ~3 seconds. Alternate wide/close-up/detail shots.
+CLIPS: Use exactly the number of clips the user message asks for. Alternate wide/close-up/detail shots.
 {cls.KEYWORD_RULES}
 
 Output ONLY valid JSON, no markdown or explanation."""
@@ -612,23 +635,8 @@ Each scene must have: narration, keywords (2-5 items), target_seconds (3-60), vi
         raise ValueError(f"Failed to generate valid scene plan after {max_retries} attempts")
 
     def _estimate_scene_count(self, total_seconds: float) -> int:
-        """Estimate scene count for fast, engaging pacing.
-
-        Target: ~3 seconds per scene for TikTok/Instagram Reel-style pacing.
-        Longer videos use slightly longer scenes to avoid overwhelming the LLM.
-        """
-        if total_seconds < 30:
-            # Very short: 3-4s per scene
-            return max(3, int(total_seconds / 3.5))
-        elif total_seconds < 120:
-            # Short: 3s per scene (fast pacing)
-            return int(total_seconds / 3)
-        elif total_seconds < 180:
-            # Medium: 4s per scene
-            return int(total_seconds / 4)
-        else:
-            # Long: 5-6s per scene, capped at 40 scenes
-            return min(40, int(total_seconds / 5))
+        """Scene count for the given length, following SECONDS_PER_CLIP pacing."""
+        return min(40, clip_count_for(total_seconds))
 
     def _parse_and_validate(self, content: str, target_duration: float) -> List[Scene]:
         """Parse LLM response and validate scenes.
@@ -719,6 +727,8 @@ Each scene must have: narration, keywords (2-5 items), target_seconds (3-60), vi
         """
         word_count = int(duration_minutes * 60 * words_per_second)
         s = self.NARRATION_STYLES.get(self.narration_style, self.NARRATION_STYLES['viral'])
+        angle = pick_angle(self.narration_style)
+        print(f"  Script angle: {angle.describe()}")
 
         loop_instruction = ""
         if loop_mode:
@@ -737,6 +747,8 @@ RULES:
 - NEVER repeat ideas — every sentence must add NEW information
 - Every sentence must be grammatically complete
 
+{variety_block(angle)}
+
 Output ONLY the narration text. No JSON, no formatting, no quotes around it."""
 
         user_prompt = f"""Write a {duration_minutes}-minute narration (~{word_count} words) about:
@@ -753,7 +765,7 @@ Output ONLY the narration text."""
                     {"role": "user", "content": user_prompt}
                 ]
 
-                content = self._call_llm(messages, temperature=0.6, stage="narration")
+                content = self._call_llm(messages, temperature=0.8, stage="narration")
 
                 if not content or len(content.strip()) == 0:
                     print(f"    WARNING: Empty response (attempt {attempt + 1}/{max_retries})")
@@ -777,6 +789,10 @@ Output ONLY the narration text."""
 
                 if len(words) < word_count * 0.5:
                     print(f"    WARNING: Too short, retrying...")
+                    continue
+
+                if has_banned_opener(content) and attempt < max_retries - 1:
+                    print(f"    WARNING: Cliche opening, retrying...")
                     continue
 
                 return content
@@ -1002,9 +1018,8 @@ Output ONLY the JSON array."""
             VideoPlan with continuous narration and clip list
         """
         total_seconds = duration_minutes * 60
-        # Longer videos use slower clip changes (4-10 seconds per clip)
-        clip_duration = 6 if duration_minutes > 1.0 else 3
-        num_clips = max(3, int(total_seconds / clip_duration))
+        clip_duration = seconds_per_clip(total_seconds)
+        num_clips = clip_count_for(total_seconds)
         word_count = int(total_seconds * words_per_second)
 
         print(f"  Using LLM: {self.provider} / {self.model}")
@@ -1061,11 +1076,13 @@ Output ONLY the JSON array."""
 
 Write a {duration_minutes}-minute narration (~{word_count} words at 3 words/sec) that directly addresses the above topic.
 Stay focused on what the user is asking — cover their specific points, questions, and angles.
-Include {num_clips} visual clips (~3 seconds each).{loop_instruction}
+Include {num_clips} visual clips (~{clip_duration:.0f} seconds each).{loop_instruction}
 
 Output ONLY the JSON, no other text."""
 
-        system_prompt = self._build_continuous_prompt(self.narration_style)
+        angle = pick_angle(self.narration_style)
+        print(f"  Script angle: {angle.describe()}")
+        system_prompt = self._build_continuous_prompt(self.narration_style) + "\n\n" + variety_block(angle)
 
         for attempt in range(max_retries):
             try:
@@ -1074,7 +1091,7 @@ Output ONLY the JSON, no other text."""
                     {"role": "user", "content": user_prompt}
                 ]
 
-                content = self._call_llm(messages, temperature=0.6, stage="narration+clips")
+                content = self._call_llm(messages, temperature=0.8, stage="narration+clips")
 
                 if not content or len(content.strip()) == 0:
                     print(f"\n  WARNING: Empty response from {self.provider} (attempt {attempt + 1}/{max_retries})")
@@ -1168,7 +1185,7 @@ Include {num_clips} clips."""
             )
 
         # Validate clip count is reasonable
-        expected_clips = target_duration / 3
+        expected_clips = target_duration / seconds_per_clip(target_duration)
         if len(plan.clips) < expected_clips * 0.5:
             raise ValueError(
                 f"Too few clips: {len(plan.clips)}, expected ~{expected_clips:.0f} "
@@ -1217,7 +1234,7 @@ Output ONLY valid JSON in this exact format:
 }
 
 CLIPS RULES:
-- Each clip represents ~3 seconds of video footage
+- Each clip represents one shot of stock footage (the user message gives the length)
 - Clips should visually illustrate the key topics, objects, and scenes mentioned in the narration
 - Spread clips evenly across the script content
 - Vary the visuals: alternate between wide shots, close-ups, different angles
@@ -1255,11 +1272,12 @@ Do NOT include markdown code blocks, explanations, or any text outside the JSON.
             VideoPlan with the original script and LLM-generated clips
         """
         total_seconds = duration_minutes * 60
-        num_clips = max(3, int(total_seconds / 3))
+        num_clips = clip_count_for(total_seconds)
+        shot_seconds = seconds_per_clip(total_seconds)
 
         system_prompt = self._build_clips_only_prompt()
 
-        user_prompt = f"""Generate {num_clips} visual clips (~3 seconds each) for this narration script.
+        user_prompt = f"""Generate {num_clips} visual clips (~{shot_seconds:.0f} seconds each) for this narration script.
 
 SCRIPT (do NOT modify this - generate visuals that match it):
 ---
@@ -1267,7 +1285,7 @@ SCRIPT (do NOT modify this - generate visuals that match it):
 ---
 
 Output {num_clips} clips that visually illustrate the key moments and topics in this script.
-Each clip should be ~3 seconds of video footage.
+Each clip should be ~{shot_seconds:.0f} seconds of video footage.
 
 Output ONLY the JSON, no other text."""
 
@@ -1316,6 +1334,80 @@ IMPORTANT: Output ONLY valid JSON with "clips" array. Each clip needs "keywords"
 
         raise ValueError(f"Failed to generate clips after {max_retries} attempts")
 
+    def generate_publish_metadata(self, narration: str, topic: Optional[str] = None) -> dict:
+        """Write a YouTube title, description and tags for a finished video.
+
+        Returns {"title": str (<=100 chars), "description": str, "tags": [str] (<=15)}.
+        Never raises: falls back to a title from the topic and the first
+        sentences of the narration if the LLM fails or returns bad JSON.
+        """
+        fallback = fallback_publish_metadata(narration, topic)
+        topic_line = f"Topic: {topic}\n\n" if topic else ""
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You write YouTube metadata for short videos. Respond with ONLY a JSON object: "
+                    '{"title": "...", "description": "...", "tags": ["...", "..."]}. '
+                    "Title: catchy, accurate, under 90 characters, no hashtags, no quotes. "
+                    "Description: 2-4 short sentences that hook the viewer and summarize the video, "
+                    "no links, no hashtags. Tags: 8-15 relevant search keywords or short phrases."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"{topic_line}Narration:\n{(narration or '')[:6000]}\n\nReturn the JSON now.",
+            },
+        ]
+        try:
+            content = self._call_llm(messages, temperature=0.5, stage="publish_metadata")
+            data = parse_llm_json(content)
+            if not isinstance(data, dict):
+                raise ValueError("metadata is not a JSON object")
+            title = _truncate_title(data.get("title") or "")
+            description = _clean_youtube_text(data.get("description") or "")
+            tags = normalize_tags(data.get("tags") or [])
+            return {
+                "title": title or fallback["title"],
+                "description": description or fallback["description"],
+                "tags": tags or fallback["tags"],
+            }
+        except Exception as e:
+            print(f"    WARNING: publish metadata generation failed, using fallback: {e}")
+            return fallback
+
+    def suggest_topics(self, niche: str, count: int, avoid: Optional[List[str]] = None,
+                       style: Optional[str] = None) -> List[str]:
+        """Brainstorm ``count`` specific, filmable Short topics for a niche.
+
+        Topics are questions or claims of at most 90 characters, without
+        numbering or clickbait phrases, deduplicated case-insensitively against
+        each other and against ``avoid`` (titles/topics the user already has;
+        near-duplicates with a similarity ratio above 0.85 are dropped). If
+        fewer than ``count`` survive, the LLM is asked once more for the rest.
+        Raises if the first LLM call fails or nothing usable comes back.
+        """
+        count = max(1, int(count))
+        avoid = [a for a in (avoid or []) if isinstance(a, str) and a.strip()]
+        accepted: List[str] = []
+        for attempt in range(2):
+            need = count - len(accepted)
+            if need <= 0:
+                break
+            ask = need + max(2, need // 4)
+            messages = _topic_messages(niche, ask, avoid + accepted, style)
+            try:
+                content = self._call_llm(messages, temperature=0.9, stage="suggest_topics")
+                raw = parse_topics_response(content)
+            except Exception:
+                if attempt == 0:
+                    raise
+                break  # keep what the first call gave
+            accepted = dedupe_topics(raw, avoid, limit=count, accepted=accepted)
+        if not accepted:
+            raise ValueError("The AI did not return any usable topics")
+        return accepted[:count]
+
     def _parse_clips_only(self, content: str, expected_clips: int) -> List[VisualClip]:
         """Parse LLM response for clips-only generation.
 
@@ -1335,6 +1427,173 @@ IMPORTANT: Output ONLY valid JSON with "clips" array. Each clip needs "keywords"
             raise ValueError(f"Too few clips: {len(clips)}, expected ~{expected_clips}")
 
         return clips
+
+
+# ── Topic brainstorming (batch autopilot) ─────────────────────
+
+TOPIC_MAX_CHARS = 90
+TOPIC_MIN_CHARS = 8
+TOPIC_SIMILARITY = 0.85
+TOPIC_AVOID_IN_PROMPT = 80
+_TOPIC_NUMBERING = re.compile(r'^\s*(?:[-*•]+|#?\d{1,3}\s*[.):\]-]|\(\d{1,3}\))\s*')
+
+
+def normalize_topic(text: str) -> str:
+    """Lowercase, punctuation-free, single-spaced form used to compare topics."""
+    text = (text or '').lower().replace("'", '').replace('’', '')
+    return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9]+', ' ', text)).strip()
+
+
+_BANNED_TOPIC_PHRASES = tuple(normalize_topic(p) for p in BANNED_PHRASES)
+
+
+def clean_topic(text) -> Optional[str]:
+    """One usable topic line, or None (too long/short, numbered junk removed, banned phrase)."""
+    if not isinstance(text, str):
+        return None
+    t = re.sub(r'\s+', ' ', text).strip()
+    t = _TOPIC_NUMBERING.sub('', t).strip()
+    t = t.strip('"\'“”‘’` ').strip()
+    t = re.sub(r'\s#\w+', '', t).strip()  # stray hashtags
+    if len(t) < TOPIC_MIN_CHARS or len(t) > TOPIC_MAX_CHARS:
+        return None
+    norm = f' {normalize_topic(t)} '
+    if any(p and f' {p} ' in norm for p in _BANNED_TOPIC_PHRASES):
+        return None
+    return t
+
+
+def _too_similar(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    matcher = SequenceMatcher(None, a, b)
+    return matcher.real_quick_ratio() > TOPIC_SIMILARITY and matcher.quick_ratio() > TOPIC_SIMILARITY \
+        and matcher.ratio() > TOPIC_SIMILARITY
+
+
+def dedupe_topics(candidates, avoid=(), limit: Optional[int] = None,
+                  accepted: Optional[List[str]] = None) -> List[str]:
+    """Append cleaned candidates to ``accepted`` unless they (nearly) repeat it or ``avoid``."""
+    result = list(accepted or [])
+    taken = [normalize_topic(a[:200]) for a in avoid or [] if isinstance(a, str)]
+    taken += [normalize_topic(t) for t in result]
+    taken = [t for t in taken if t]
+    for raw in candidates or []:
+        if limit is not None and len(result) >= limit:
+            break
+        topic = clean_topic(raw)
+        if topic is None:
+            continue
+        norm = normalize_topic(topic)
+        if not norm or any(_too_similar(norm, t) for t in taken):
+            continue
+        result.append(topic)
+        taken.append(norm)
+    return result
+
+
+def parse_topics_response(content: str) -> List[str]:
+    """Topic strings from {"topics": [...]} (or a bare list; items may be {"topic": ...})."""
+    data = parse_llm_json(content)
+    if isinstance(data, dict):
+        data = data.get('topics') or data.get('ideas') or data.get('titles')
+    if not isinstance(data, list):
+        raise ValueError("LLM response has no 'topics' list")
+    topics = []
+    for entry in data:
+        if isinstance(entry, dict):
+            entry = entry.get('topic') or entry.get('title') or entry.get('text')
+        if isinstance(entry, str) and entry.strip():
+            topics.append(entry.strip())
+    return topics
+
+
+def _topic_messages(niche: str, count: int, avoid: List[str], style: Optional[str]) -> list:
+    banned = ', '.join(f'"{p}"' for p in BANNED_PHRASES)
+    style_line = f"- Match a {style} channel's tone.\n" if style else ''
+    system = (
+        "You brainstorm topics for short narrated videos (YouTube Shorts) built from stock footage. "
+        'Respond with ONLY a JSON object: {"topics": ["...", "..."]}.\n'
+        "Rules for every topic:\n"
+        "- Specific and curiosity-driven: a sharp question or a surprising claim, not a broad subject.\n"
+        f"- At most {TOPIC_MAX_CHARS} characters, one line, no numbering, quotes, emojis or hashtags.\n"
+        "- Filmable with stock footage: about real people, places, animals, objects, food, nature or "
+        "everyday situations a camera can show.\n"
+        "- Factually defensible; no invented statistics.\n"
+        f"- No clickbait cliches or these phrases: {banned}.\n"
+        "- Every topic clearly different from the others and from the already-covered list.\n"
+        f"{style_line}"
+    )
+    recent = [a.strip()[:100] for a in avoid[-TOPIC_AVOID_IN_PROMPT:] if a.strip()]
+    covered = ("\n\nAlready covered (do not repeat or rephrase these):\n"
+               + "\n".join(f"- {a}" for a in recent)) if recent else ''
+    user = f"Niche: {niche}\nWrite {count} topics.{covered}\n\nReturn the JSON now."
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+YOUTUBE_TITLE_MAX = 100
+YOUTUBE_MAX_TAGS = 15
+YOUTUBE_TAGS_TOTAL_MAX = 450  # YouTube rejects tag lists over ~500 chars in total
+
+
+def _clean_youtube_text(text) -> str:
+    """YouTube rejects '<' and '>' in titles and descriptions."""
+    return re.sub(r"[<>]", "", str(text or "")).strip()
+
+
+def _truncate_title(title: str, limit: int = YOUTUBE_TITLE_MAX) -> str:
+    title = re.sub(r"\s+", " ", _clean_youtube_text(title)).strip().strip('"\'')
+    if len(title) <= limit:
+        return title
+    cut = title[:limit - 1]
+    if " " in cut[limit // 2:]:
+        cut = cut[:cut.rfind(" ")]
+    return cut.rstrip(" ,;:-") + "\u2026"
+
+
+def normalize_tags(tags, limit: int = YOUTUBE_MAX_TAGS,
+                   total_max: int = YOUTUBE_TAGS_TOTAL_MAX) -> list:
+    """Clean, de-duplicate (case-insensitive) and cap a tag list for YouTube."""
+    if isinstance(tags, str):
+        tags = tags.split(",")
+    out, seen, total = [], set(), 0
+    for tag in tags or []:
+        if not isinstance(tag, str):
+            continue
+        tag = re.sub(r"\s+", " ", _clean_youtube_text(tag).lstrip("#")).strip(" ,")
+        if not tag or len(tag) > 100 or tag.casefold() in seen:
+            continue
+        if total + len(tag) > total_max:
+            break
+        out.append(tag)
+        seen.add(tag.casefold())
+        total += len(tag)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _first_sentences(text: str, count: int = 2, max_chars: int = 400) -> str:
+    sentences = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text or "").strip())
+    result = " ".join(s for s in sentences[:count] if s).strip()
+    if len(result) > max_chars:
+        result = result[:max_chars - 1].rstrip() + "\u2026"
+    return result
+
+
+def fallback_publish_metadata(narration: str, topic: Optional[str] = None) -> dict:
+    """Metadata used when the LLM is unavailable or returns unusable output."""
+    words = (narration or "").split()
+    title = topic or (" ".join(words[:10]) if words else "") or "New video"
+    keywords = [
+        w for w in re.findall(r"[A-Za-z][A-Za-z'-]{2,}", topic or "")
+        if w.lower() not in KEYWORD_STOPWORDS
+    ]
+    return {
+        "title": _truncate_title(title) or "New video",
+        "description": _clean_youtube_text(_first_sentences(narration)),
+        "tags": normalize_tags(keywords),
+    }
 
 
 def create_planner(narration_style: str = "viral",

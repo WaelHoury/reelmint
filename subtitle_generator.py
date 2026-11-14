@@ -197,23 +197,64 @@ class SubtitleGenerator:
         'top': 8,       # Top center
     }
 
+    ALIGNMENT_TO_POSITION = {2: 'bottom', 5: 'center', 8: 'top'}
+
+    # Fields a user can override on top of a preset
+    OVERRIDE_KEYS = ('font', 'font_size', 'color', 'outline_color', 'position')
+
     @staticmethod
-    def hex_to_ass_color(hex_color: str) -> str:
-        """Convert hex color (#RRGGBB or #RRGGBBAA) to ASS color (&H00BBGGRR).
+    def parse_color(value) -> Tuple[int, int, int]:
+        """Parse a CSS-style colour into (r, g, b).
 
-        Args:
-            hex_color: Hex color string like '#FFFFFF' or '#FF0000'
+        Accepts ``#RGB``, ``#RRGGBB``, ``#RRGGBBAA`` (alpha ignored), the same
+        without ``#``, and ``rgb(r, g, b)`` / ``rgba(r, g, b, a)`` (alpha
+        ignored: captions are always drawn opaque).
 
-        Returns:
-            ASS BGR color string like '&H00FFFFFF'
+        Raises:
+            ValueError: for anything else.
         """
-        hex_color = hex_color.lstrip('#')
-        if len(hex_color) >= 6:
-            r = hex_color[0:2]
-            g = hex_color[2:4]
-            b = hex_color[4:6]
-            return f'&H00{b.upper()}{g.upper()}{r.upper()}'
-        return '&H00FFFFFF'
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Invalid colour {value!r}: use #RRGGBB")
+        text = value.strip()
+        m = re.fullmatch(r'#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})', text)
+        if m:
+            h = m.group(1)
+            if len(h) == 3:
+                h = ''.join(c * 2 for c in h)
+            return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        m = re.fullmatch(
+            r'rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*'
+            r'(?:,\s*(?:\d*\.?\d+%?)\s*)?\)',
+            text, flags=re.IGNORECASE)
+        if m:
+            rgb = tuple(int(g) for g in m.groups()[:3])
+            if all(0 <= c <= 255 for c in rgb):
+                return rgb
+        raise ValueError(f"Invalid colour {value!r}: use #RRGGBB, #RGB or rgb(r, g, b)")
+
+    @classmethod
+    def normalize_color(cls, value) -> str:
+        """Return ``value`` as ``#RRGGBB`` (raises ValueError if it isn't a colour)."""
+        r, g, b = cls.parse_color(value)
+        return f'#{r:02X}{g:02X}{b:02X}'
+
+    @classmethod
+    def hex_to_ass_color(cls, hex_color: str) -> str:
+        """Convert a colour (#RGB, #RRGGBB, rgb(), rgba()) to ASS colour (&H00BBGGRR).
+
+        Raises:
+            ValueError: if ``hex_color`` is not a recognised colour.
+        """
+        r, g, b = cls.parse_color(hex_color)
+        return f'&H00{b:02X}{g:02X}{r:02X}'
+
+    @staticmethod
+    def ass_to_hex_color(ass_color: str) -> str:
+        """Convert an ASS colour (&HAABBGGRR) to #RRGGBB."""
+        h = (ass_color or '').upper().replace('&H', '').rstrip('&')
+        h = h.rjust(8, '0')[-6:]
+        b, g, r = h[0:2], h[2:4], h[4:6]
+        return f'#{r}{g}{b}'
 
     def __init__(self, style: str = 'youtube', orientation: str = 'landscape',
                  custom_overrides: dict = None):
@@ -224,12 +265,15 @@ class SubtitleGenerator:
             orientation: Video orientation ('landscape', 'portrait', 'square')
             custom_overrides: Optional dict to override preset values.
                 Supported keys: font, font_size, color (#hex), outline_color (#hex), position (bottom/center/top)
+
+        Raises:
+            ValueError: if an override colour is not a recognised colour.
         """
         self.style_name = style
         self.orientation = orientation
 
         # Get style dict for the preset
-        style_dict = getattr(SubtitleStyle, style.upper(), SubtitleStyle.YOUTUBE)
+        style_dict = getattr(SubtitleStyle, (style or 'youtube').upper(), SubtitleStyle.YOUTUBE)
 
         # Select orientation-specific settings
         if orientation in style_dict:
@@ -238,25 +282,71 @@ class SubtitleGenerator:
             # Fallback to landscape if orientation not found
             self.style = dict(style_dict.get('landscape', style_dict))
 
-        # Apply custom overrides
-        if custom_overrides:
-            if 'font' in custom_overrides and custom_overrides['font']:
-                self.style['font'] = custom_overrides['font']
-            if 'font_size' in custom_overrides and custom_overrides['font_size']:
-                self.style['font_size'] = int(custom_overrides['font_size'])
-            if 'color' in custom_overrides and custom_overrides['color']:
-                self.style['primary_color'] = self.hex_to_ass_color(custom_overrides['color'])
-            if 'outline_color' in custom_overrides and custom_overrides['outline_color']:
-                self.style['outline_color'] = self.hex_to_ass_color(custom_overrides['outline_color'])
-            if 'position' in custom_overrides and custom_overrides['position']:
-                self.style['alignment'] = self.POSITION_MAP.get(
-                    custom_overrides['position'], self.style.get('alignment', 2)
-                )
-                # Adjust margin_v based on position
-                if custom_overrides['position'] == 'center':
-                    self.style['margin_v'] = 0
-                elif custom_overrides['position'] == 'top':
-                    self.style['margin_v'] = 60
+        # Only the overrides that were actually given (falsy values = "use preset")
+        self.custom_overrides = {
+            k: v for k, v in (custom_overrides or {}).items()
+            if k in self.OVERRIDE_KEYS and v
+        }
+        self._apply_overrides(self.style, self.custom_overrides)
+
+    @classmethod
+    def _apply_overrides(cls, style: dict, overrides: dict, bottom_margin: int = None) -> None:
+        """Apply font/size/colour/position overrides onto an ASS style dict (in place)."""
+        if not overrides:
+            return
+        if overrides.get('font'):
+            style['font'] = overrides['font']
+        if overrides.get('font_size'):
+            style['font_size'] = int(overrides['font_size'])
+        if overrides.get('color'):
+            style['primary_color'] = cls.hex_to_ass_color(overrides['color'])
+        if overrides.get('outline_color'):
+            style['outline_color'] = cls.hex_to_ass_color(overrides['outline_color'])
+        position = overrides.get('position')
+        if position:
+            style['alignment'] = cls.POSITION_MAP.get(position, style.get('alignment', 2))
+            # Adjust margin_v based on position
+            if position == 'center':
+                style['margin_v'] = 0
+            elif position == 'top':
+                style['margin_v'] = 60
+            elif position == 'bottom' and bottom_margin is not None:
+                style['margin_v'] = bottom_margin
+
+    @property
+    def uses_karaoke(self) -> bool:
+        """Portrait/square videos get word-by-word karaoke captions."""
+        return self.orientation in ('portrait', 'square')
+
+    def karaoke_style(self) -> dict:
+        """The karaoke style for this orientation with the user's overrides applied."""
+        base = KaraokeStyle.PORTRAIT if self.orientation == 'portrait' else KaraokeStyle.SQUARE
+        style = dict(base)
+        # A bottom-aligned karaoke line needs some room above the frame edge
+        self._apply_overrides(style, self.custom_overrides,
+                              bottom_margin=120 if self.orientation == 'portrait' else 90)
+        return style
+
+    def resolved_settings(self) -> dict:
+        """Font/size/colours/position the captions are actually drawn with.
+
+        Portrait/square videos are rendered as karaoke, whose base style is
+        ``KaraokeStyle`` (not the preset); landscape uses the preset.
+        """
+        style = self.karaoke_style() if self.uses_karaoke else self.style
+        return {
+            'font': style['font'],
+            'font_size': int(style['font_size']),
+            'color': self.ass_to_hex_color(style['primary_color']),
+            'outline_color': self.ass_to_hex_color(style['outline_color']),
+            'position': self.ALIGNMENT_TO_POSITION.get(style['alignment'], 'bottom'),
+        }
+
+    def generate_for_words(self, word_timestamps: List[Dict], output_path: Path) -> Path:
+        """Karaoke ASS for portrait/square, phrase ASS for landscape (as the first render does)."""
+        if self.uses_karaoke:
+            return self.generate_karaoke_ass(word_timestamps, output_path)
+        return self.generate_phrase_ass(word_timestamps, output_path)
 
     def generate_srt(self, scenes: List[Dict], output_path: Path) -> Path:
         """Generate SRT subtitle file from scenes.
@@ -590,11 +680,8 @@ class SubtitleGenerator:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Get karaoke style for current orientation
-        if self.orientation == 'portrait':
-            k_style = KaraokeStyle.PORTRAIT
-        else:
-            k_style = KaraokeStyle.SQUARE
+        # Karaoke style for current orientation, with the user's overrides
+        k_style = self.karaoke_style()
 
         if highlight_color is None:
             highlight_color = k_style['highlight_color']

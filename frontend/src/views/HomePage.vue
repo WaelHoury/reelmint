@@ -51,6 +51,23 @@ const router = useRouter()
           Get Started
         </button>
       </div>
+
+      <!-- Autopilot -->
+      <div class="glass-card glass-card-hover autopilot-card" @click="router.push('/autopilot/new')">
+        <div class="card-icon small">
+          <el-icon :size="28"><Timer /></el-icon>
+        </div>
+        <div class="autopilot-text">
+          <h2 class="card-title">Autopilot – queue many videos</h2>
+          <p class="autopilot-description">
+            Paste a list of topics or scripts. Videos are made one at a time and can be published to YouTube on a schedule.
+          </p>
+        </div>
+        <button class="btn-secondary autopilot-btn">
+          New batch
+          <el-icon><ArrowRight /></el-icon>
+        </button>
+      </div>
     </div>
   </div>
 </template>
@@ -104,17 +121,17 @@ const router = useRouter()
   width: 80px;
   height: 80px;
   border-radius: 50%;
-  background: rgba(167, 139, 250, 0.1);
+  background: rgba(62, 230, 168, 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--ce-purple-light);
+  color: var(--ce-accent-light);
   margin-bottom: 20px;
   transition: background var(--ce-transition-normal);
 }
 
 .creation-card:hover .card-icon {
-  background: rgba(167, 139, 250, 0.18);
+  background: rgba(62, 230, 168, 0.18);
 }
 
 .card-title {
@@ -145,7 +162,58 @@ const router = useRouter()
   padding: 14px 24px;
 }
 
+.autopilot-card {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 24px 28px;
+  cursor: pointer;
+}
+
+.card-icon.small {
+  width: 56px;
+  height: 56px;
+  margin-bottom: 0;
+  flex-shrink: 0;
+}
+
+.autopilot-card:hover .card-icon {
+  background: rgba(62, 230, 168, 0.18);
+}
+
+.autopilot-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.autopilot-text .card-title {
+  font-size: 17px;
+  margin-bottom: 4px;
+}
+
+.autopilot-description {
+  font-size: 13px;
+  color: var(--ce-text-muted);
+  line-height: 1.5;
+}
+
+.autopilot-btn {
+  flex-shrink: 0;
+  padding: 10px 18px;
+  font-size: 13px;
+}
+
 @media (max-width: 640px) {
+  .autopilot-card {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .autopilot-btn {
+    width: 100%;
+  }
+
   .cards-grid {
     grid-template-columns: 1fr;
     max-width: 380px;

@@ -1,6 +1,6 @@
 """FastAPI dependencies for the (single, local) user and session ownership.
 
-AI Video Maker is a self-hosted tool without login. Every request acts as
+Reelmint is a self-hosted tool without login. Every request acts as
 one local user, created on first use. Ownership columns (``user_id``) are kept
 so the data model stays unchanged.
 """

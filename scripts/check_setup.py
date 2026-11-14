@@ -145,7 +145,7 @@ def _music():
 
 
 icons = {"ok": "  OK  ", "warn": " WARN ", "fail": " FAIL "}
-print("\nAI Video Maker setup check\n")
+print("\nReelmint setup check\n")
 for status, name, detail in results:
     print(f"[{icons[status]}] {name}: {detail}")
 

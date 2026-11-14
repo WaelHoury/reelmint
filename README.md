@@ -1,20 +1,27 @@
-<h1 align="center">AI Video Maker</h1>
-
 <p align="center">
-  <b>Type a topic, get back a narrated, captioned short video built from free stock footage, on your own machine.</b>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/wordmark-dark.png">
+    <img src="docs/brand/wordmark-light.png" alt="Reelmint" width="340">
+  </picture>
 </p>
 
 <p align="center">
-  <a href="LICENSE.md"><img alt="License: PolyForm Noncommercial + commercial output" src="https://img.shields.io/badge/license-PolyForm%20NC%20%2B%20output-blue"></a>
+  <b>Type a topic, get back a narrated, captioned Short built from free stock footage, on your own machine.</b><br>
+  Queue a whole week of videos and let it publish them to YouTube one by one.
+</p>
+
+<p align="center">
+  <a href="LICENSE.md"><img alt="License: PolyForm Noncommercial + commercial output" src="https://img.shields.io/badge/license-PolyForm%20NC%20%2B%20output-0E8C84"></a>
   <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
-  <img alt="Runs locally" src="https://img.shields.io/badge/runs-locally-2ea44f">
+  <img alt="Runs locally" src="https://img.shields.io/badge/runs-locally-3EE6A8">
+  <a href="https://github.com/WaelHoury/reelmint/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/WaelHoury/reelmint/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
 <p align="center">
-  <img src="docs/demo.gif" alt="Three vertical videos made with AI Video Maker, with word-by-word captions" width="660">
+  <img src="docs/demo.gif" alt="Three vertical videos made with Reelmint, with word-by-word captions" width="100%">
 </p>
 
-AI Video Maker writes the script, finds matching clips on Pexels and Pixabay, records a voiceover, times captions to each spoken word, adds music and a color grade, and renders an MP4. You can review the script and every clip before it renders, and fix anything in a timeline editor afterward.
+Reelmint writes the script, finds matching clips on Pexels and Pixabay, records a voiceover, times captions to each spoken word, adds music and a color grade, and renders an MP4. You can review the script and every clip before it renders, and fix anything in a timeline editor afterward.
 
 It runs locally. With Ollama and Kokoro you need one free account (Pexels) and no paid APIs. You can also have Claude, or any model on OpenRouter, write the scripts.
 
@@ -22,25 +29,24 @@ It runs locally. With Ollama and Kokoro you need one free account (Pexels) and n
 
 Every video on **[@OddSensei0](https://www.youtube.com/@OddSensei0)** was made with this tool, without manual editing.
 
-| | | | |
-|:-:|:-:|:-:|:-:|
-| [<img src="https://i.ytimg.com/vi/84hl5XBN6l8/oar2.jpg" width="170" alt="Is duck seafood?">](https://www.youtube.com/shorts/84hl5XBN6l8) | [<img src="https://i.ytimg.com/vi/eByDbQQvEag/oar2.jpg" width="170" alt="Is a river a thing, or an event?">](https://www.youtube.com/shorts/eByDbQQvEag) | [<img src="https://i.ytimg.com/vi/6cgEXoYGOUY/oar2.jpg" width="170" alt="Is ketchup a smoothie?">](https://www.youtube.com/shorts/6cgEXoYGOUY) | [<img src="https://i.ytimg.com/vi/N73o3l_6-jQ/oar2.jpg" width="170" alt="Is cereal soup?">](https://www.youtube.com/shorts/N73o3l_6-jQ) |
-| Is duck seafood? | Is a river a "thing"? | Is ketchup a smoothie? | Is cereal soup? ([script](examples/is-cereal-soup.txt)) |
+<p align="center">
+  <a href="https://www.youtube.com/shorts/84hl5XBN6l8"><img src="https://i.ytimg.com/vi/84hl5XBN6l8/oar2.jpg" width="23%" alt="Is duck seafood?"></a>
+  <a href="https://www.youtube.com/shorts/eByDbQQvEag"><img src="https://i.ytimg.com/vi/eByDbQQvEag/oar2.jpg" width="23%" alt="Is a river a thing, or an event?"></a>
+  <a href="https://www.youtube.com/shorts/6cgEXoYGOUY"><img src="https://i.ytimg.com/vi/6cgEXoYGOUY/oar2.jpg" width="23%" alt="Is ketchup a smoothie?"></a>
+  <a href="https://www.youtube.com/shorts/N73o3l_6-jQ"><img src="https://i.ytimg.com/vi/N73o3l_6-jQ/oar2.jpg" width="23%" alt="Is cereal soup?"></a>
+</p>
+
+<p align="center"><sub>Is duck seafood? · Is a river a "thing"? · Is ketchup a smoothie? · Is cereal soup? (<a href="examples/is-cereal-soup.txt">script</a>)</sub></p>
 
 Long-form works too: [The Present is a Lie](https://www.youtube.com/watch?v=QpQJrh9whdY) (16:9).
 
 ## How it works
 
-```
-topic or script
-   │
-   ├─ 1. Script     LLM writes the narration and describes a shot for every few seconds
-   ├─ 2. Footage    each shot is searched on Pexels (+ Pixabay); stills get a Ken Burns move
-   ├─ 3. Voice      Kokoro (local), Chatterbox (local, GPU) or Fish Audio (cloud, voice cloning)
-   ├─ 4. Captions   Whisper finds the exact time of every word → animated ASS subtitles
-   ├─ 5. Edit       crossfades, color grade, background music ducked under the voice
-   └─ 6. Render     FFmpeg → MP4 in 9:16, 16:9 or 1:1, plus a credits file for every clip used
-```
+<p align="center">
+  <img src="docs/brand/pipeline.png" alt="1 Script, 2 Footage, 3 Voice, 4 Captions, 5 Edit, 6 Publish" width="100%">
+</p>
+
+Each step is swappable: Ollama, OpenRouter or Claude for the script; Pexels and Pixabay for footage, with a slow zoom on stills when no video fits; Kokoro, Chatterbox or Fish Audio for the voice. Output is 9:16, 16:9 or 1:1, plus a credits file for every clip used.
 
 What's different from other "money printer" style generators:
 
@@ -49,6 +55,30 @@ What's different from other "money printer" style generators:
 - **Shots follow the narration.** The planner writes a visual description for every few seconds of speech, not one keyword per scene. The CLI also downloads several candidates per shot and keeps the one [OpenCLIP](https://github.com/mlfoundations/open_clip) rates closest to that description.
 - **Credits are tracked.** Every render writes `<name>_credits.txt` with the author and link for each clip, ready to paste into a description.
 
+## Autopilot: run a channel from a list of topics
+
+Paste ten topics (one per line), paste ten finished scripts, or just name a niche ("weird food facts") and let the AI suggest fresh topics that don't repeat your earlier videos. Then press start. Reelmint makes the videos one at a time, in order. As each one finishes, it can go straight to YouTube with an AI-written title, description and tags, and the footage credits are added to the description for you.
+
+- **Publish now or on a schedule.** "First at 9:00, then every 4 hours" uses YouTube's own scheduled publishing, so videos go live on time even if your computer is off.
+- **Hands-off mode, safe to leave overnight.** Failed steps retry on their own (up to three tries, with a pause between), and if YouTube's daily upload quota runs out, uploads wait for the reset and continue. Nothing stops to ask you.
+- **Without hands-off,** a failed video is marked with the reason and the batch moves on; retry it with one click. Pause, resume or add more topics at any time.
+- **No repeated shots.** A clip never appears twice in the same video. When the best match is taken, the search widens step by step (more results, fewer keywords, nouns from the shot description, the topic, Pixabay) until it finds a fresh one.
+- **Same pipeline as one-off videos.** Same voices, caption styles and formats, and every video lands in your library where you can open it in the editor.
+
+Hosted "faceless channel" tools usually sell this as a paid monthly plan with a cap on how many videos you can make. Here it runs on your own machine, with no per-video fees.
+
+Two YouTube rules to know before you automate:
+
+- **Uploads stay private until your Google Cloud project passes YouTube's [API compliance audit](https://developers.google.com/youtube/v3/guides/quota_and_compliance_audits).** Apply once for the project whose OAuth client you use in Reelmint. Until then, use Autopilot to upload as private and publish from YouTube Studio.
+- **Uploads per day are limited by your project's API quota.** Check the YouTube Data API v3 quota in the Google Cloud Console and request more if you plan to post often.
+
+From the command line (no web app, no publishing), the same idea is `--batch`:
+
+```bash
+python generate_video.py --batch examples/batch-topics.txt --duration 0.75 \
+  --orientation portrait --output videos/
+```
+
 ## Quick start
 
 You need a free [Pexels API key](https://www.pexels.com/api/), plus something to write scripts: [Ollama](https://ollama.com) (local and free), a Claude subscription, an Anthropic API key, or an OpenRouter key.
@@ -56,8 +86,8 @@ You need a free [Pexels API key](https://www.pexels.com/api/), plus something to
 ### Web app (Docker)
 
 ```bash
-git clone https://github.com/WaelHoury/ai-video-maker.git
-cd ai-video-maker
+git clone https://github.com/WaelHoury/reelmint.git
+cd reelmint
 cp .env.example .env          # paste your PEXELS_API_KEY
 ollama pull qwen2.5:3b        # skip if you use Claude or OpenRouter
 docker compose up --build
@@ -181,7 +211,7 @@ frontend/              Vue 3 web app (wizard, editor, library)
 
 ## License
 
-AI Video Maker is **source-available** under the [PolyForm Noncommercial License 1.0.0](LICENSE.md), with one addition: **what you make with it is yours to use commercially.**
+Reelmint is **source-available** under the [PolyForm Noncommercial License 1.0.0](LICENSE.md), with one addition: **what you make with it is yours to use commercially.**
 
 - **Free:** personal use, hobby channels, research, education, and modifying the code for yourself.
 - **Free:** monetizing the videos it produces, including YouTube revenue, sponsorships and client work.

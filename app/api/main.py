@@ -1,4 +1,4 @@
-"""FastAPI application for AI Video Maker API."""
+"""FastAPI application for Reelmint API."""
 
 import asyncio
 import logging
@@ -22,13 +22,14 @@ from app.api.routes import (
     tts_router,
     publish_router,
     video_publish_router,
+    batches_router,
 )
 
 logger = logging.getLogger(__name__)
 
 
 async def _stale_job_cleanup_loop():
-    """Periodically detect and reset stale generating/clips_generating sessions."""
+    """Periodically detect and reset stale generating/clips_generating sessions and stuck batches."""
     from redis import Redis
     from datetime import datetime, timezone
     from app.api.services.session_store import session_store
@@ -93,6 +94,15 @@ async def _stale_job_cleanup_loop():
         except Exception:
             logger.exception("Stale job cleanup error")
 
+        # --- Batch queue: revive broken runner chains, fail items whose worker died ---
+        try:
+            from app.api.services.batch_service import recover_stuck_batches
+            stats = await asyncio.to_thread(recover_stuck_batches)
+            if stats.get("failed_items") or stats.get("requeued"):
+                logger.warning("Batch recovery: %s", stats)
+        except Exception:
+            logger.exception("Batch recovery error")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -124,7 +134,7 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title="AI Video Maker API",
+    title="Reelmint API",
     description="REST API for generating YouTube videos from text prompts or scripts",
     version="1.0.0",
     docs_url="/docs",
@@ -172,6 +182,7 @@ app.include_router(editor_router, prefix="/api")
 app.include_router(tts_router, prefix="/api")
 app.include_router(publish_router, prefix="/api")
 app.include_router(video_publish_router, prefix="/api")
+app.include_router(batches_router, prefix="/api")
 
 
 # Root endpoint
@@ -179,7 +190,7 @@ app.include_router(video_publish_router, prefix="/api")
 async def root():
     """API root - returns basic info."""
     return {
-        "name": "AI Video Maker API",
+        "name": "Reelmint API",
         "version": "1.0.0",
         "docs": "/docs",
         "health": "/health",

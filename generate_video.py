@@ -2,6 +2,7 @@
 
 Usage:
     python generate_video.py --prompt "explain photosynthesis" --duration 1.0 --output video.mp4
+    python generate_video.py --batch examples/batch-topics.txt --duration 0.5 --output out/
 """
 
 import argparse
@@ -32,7 +33,10 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                    subtitle_settings: dict = None,
                    intermediate_callback=None,
                    pre_selected_clips: list = None,
-                   tts_selection: dict = None) -> Path:
+                   tts_selection: dict = None,
+                   subtitles_enabled: bool = None,
+                   subtitle_style: str = None,
+                   loop_mode: bool = None) -> Path:
     """Generate video from text prompt or script.
 
     Args:
@@ -64,7 +68,7 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
     # Setup temp directory
     if temp_dir is None:
-        temp_dir = Path("temp") / f"video_{output_path.stem}"
+        temp_dir = Path(os.getenv("TEMP_DIR") or "temp") / f"video_{output_path.stem}"
     temp_dir = Path(temp_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -185,7 +189,9 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             else:
                 words_per_second = 3.0
 
-        loop_mode = os.getenv("ENABLE_VIDEO_LOOP", "false").lower() == "true"
+        # Per-video settings win; .env values are the defaults.
+        if loop_mode is None:
+            loop_mode = os.getenv("ENABLE_VIDEO_LOOP", "false").lower() == "true"
 
         if pre_selected_clips and script_text:
             # Clips already selected in wizard — skip LLM call entirely
@@ -479,7 +485,10 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             # Full path: search Pexels, download candidates, score with CLIP
             print("\n[3/5] Searching and scoring videos...")
             _report(35, "Searching and scoring videos...")
-            used_video_ids = set()
+            from app.media.clip_picker import ClipReservations, find_candidates, media_key
+            # Clips already used in this video: no shot repeats another's footage.
+            used_clips = ClipReservations()
+            clip_topic = prompt or (script_text or "")[:160]
             candidates_count = int(os.getenv("CLIP_CANDIDATES", "5"))
 
             clip_results = [None] * num_clips
@@ -489,55 +498,65 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 searcher.download(vid_info, dl_path)
                 return {'path': dl_path, 'info': vid_info}
 
+            def _reserve_first(infos):
+                """First of ``infos`` not yet used in this video (reused only if all are)."""
+                for info in infos:
+                    if used_clips.try_reserve(media_key(info)):
+                        return info
+                print("    Warning: every candidate is already used in this video; reusing one")
+                used_clips.reserve(media_key(infos[0]))
+                return infos[0]
+
             def _process_clip(i, clip):
                 clip_dir = temp_dir / f"clip_{i}"
                 clip_dir.mkdir(exist_ok=True)
 
                 print(f"\n  Clip {i+1}/{num_clips}: Searching for {clip.keywords}...")
-                # Require clips at least as long as the slot so short clips
-                # don't make the video shorter than the narration
-                videos = searcher.search(clip.keywords, min_duration=clip_duration,
-                                         max_results=20, orientation=orientation)
+                # Unused candidates from the first rung of the broadening ladder
+                # (all keywords -> page 2 -> fewer keywords -> description/topic
+                # nouns -> Pixabay video/image) that has any.
+                candidates, rung = find_candidates(
+                    searcher, clip, orientation,
+                    min_duration=clip_duration,
+                    reservations=used_clips,
+                    topic=clip_topic,
+                    limit=candidates_count,
+                    label=f"{i+1}/{num_clips}",
+                )
+                if rung and rung != "full_keywords":
+                    print(f"    Broadened search: found footage on rung '{rung}'")
 
-                if not videos:
-                    print(f"    Warning: No videos found, trying broader search...")
-                    videos = searcher.search(clip.keywords[:1], max_results=20, orientation=orientation)
-
-                if not videos and searcher.enable_image_fallback:
-                    # Image fallback: search for still images, convert with Ken Burns
-                    print(f"    No videos found. Trying image fallback...")
-                    from video_assembler import KEN_BURNS_EFFECTS
-                    images = searcher.search_images(clip.keywords, max_results=3, orientation=orientation)
-                    if images:
-                        best_image = images[0]
-                        image_ext = '.jpg' if 'jpeg' in best_image.download_url.lower() or 'jpg' in best_image.download_url.lower() else '.png'
-                        image_path = clip_dir / f"fallback_image{image_ext}"
-                        searcher.download_image(best_image, image_path)
-
-                        effect = KEN_BURNS_EFFECTS[i % len(KEN_BURNS_EFFECTS)]
-                        trimmed_path = clip_dir / "trimmed.mp4"
-                        assembler.image_to_video(
-                            image_path, trimmed_path,
-                            duration_sec=clip_duration,
-                            orientation=orientation,
-                            effect=effect,
-                            color_grade_filter=color_grade_filter,
-                        )
-
-                        with clip_lock:
-                            tracker.add_asset(best_image.to_dict(), i)
-
-                        print(f"  Clip {i+1}/{num_clips} done (image fallback, {effect})")
-                        return trimmed_path
-
-                if not videos:
+                if not candidates:
                     raise ValueError(f"No videos found for clip {i} keywords: {clip.keywords}")
 
-                # Filter out duplicates (thread-safe read)
-                with clip_lock:
-                    available_videos = [v for v in videos if v.id not in used_video_ids]
-                if not available_videos:
-                    available_videos = videos
+                if getattr(candidates[0], 'media_type', 'video') == 'image':
+                    # Image fallback: still image, converted with Ken Burns
+                    from video_assembler import KEN_BURNS_EFFECTS
+                    best_image = _reserve_first(candidates)
+                    image_ext = '.jpg' if 'jpeg' in best_image.download_url.lower() or 'jpg' in best_image.download_url.lower() else '.png'
+                    image_path = clip_dir / f"fallback_image{image_ext}"
+                    searcher.download_image(best_image, image_path)
+
+                    effect = KEN_BURNS_EFFECTS[i % len(KEN_BURNS_EFFECTS)]
+                    trimmed_path = clip_dir / "trimmed.mp4"
+                    assembler.image_to_video(
+                        image_path, trimmed_path,
+                        duration_sec=clip_duration,
+                        orientation=orientation,
+                        effect=effect,
+                        color_grade_filter=color_grade_filter,
+                    )
+
+                    with clip_lock:
+                        tracker.add_asset(best_image.to_dict(), i)
+
+                    print(f"  Clip {i+1}/{num_clips} done (image fallback, {effect})")
+                    return trimmed_path
+
+                # Prefer clips at least as long as the slot so short clips
+                # don't make the video shorter than the narration
+                long_enough = [v for v in candidates if (getattr(v, 'duration', 0) or 0) >= clip_duration]
+                available_videos = long_enough or candidates
 
                 # Download candidates in parallel
                 downloaded = []
@@ -564,21 +583,23 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 scores = matcher.score_videos(video_paths, score_text) or {}
 
                 if scores:
-                    best_path = max(scores, key=scores.get)
-                    best_score = scores[best_path]
+                    ranked_paths = sorted(video_paths, key=lambda p: scores.get(p, float('-inf')), reverse=True)
                 else:
-                    # Every candidate failed embedding: use the first download
+                    # Every candidate failed embedding: keep download order
                     print("    Warning: CLIP scoring failed for all candidates, using first download")
-                    best_path = video_paths[0]
-                    best_score = 0.0
-                best_info = next(d['info'] for d in downloaded if d['path'] == best_path)
+                    ranked_paths = video_paths
+                info_by_path = {d['path']: d['info'] for d in downloaded}
+
+                # Best-scoring clip that no other shot has claimed meanwhile
+                best_info = _reserve_first([info_by_path[p] for p in ranked_paths])
+                best_path = next(p for p in ranked_paths if info_by_path[p] is best_info)
+                best_score = scores.get(best_path, 0.0) if scores else 0.0
 
                 print(f"    Best match: score={best_score:.3f}")
 
                 # Track asset (thread-safe)
                 with clip_lock:
                     tracker.add_asset(best_info.to_dict(), i)
-                    used_video_ids.add(best_info.id)
 
                 # Single-pass: normalize + color grade + trim
                 trimmed_path = clip_dir / "trimmed.mp4"
@@ -698,7 +719,8 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         # Prepare subscribe overlay if enabled
         needs_overlay = os.getenv("ENABLE_SUBSCRIBE_OVERLAY", "false").lower() == "true"
-        needs_subtitles = os.getenv("ENABLE_SUBTITLES", "true").lower() == "true"
+        needs_subtitles = (subtitles_enabled if subtitles_enabled is not None
+                           else os.getenv("ENABLE_SUBTITLES", "true").lower() == "true")
 
         subscribe_video_path = None
         subscribe_params = None
@@ -721,11 +743,12 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
 
         # Generate subtitle file if enabled
         subtitle_file = None
+        sub_gen = None
         if needs_subtitles:
             print("  Generating subtitles...")
 
             sub_gen = SubtitleGenerator(
-                style=os.getenv("SUBTITLE_STYLE", "youtube"),
+                style=subtitle_style or os.getenv("SUBTITLE_STYLE", "youtube"),
                 orientation=orientation,
                 custom_overrides=subtitle_settings,
             )
@@ -812,6 +835,19 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 'trimmed_clips': [str(p) for p in original_trimmed_videos],
                 'clip_duration': clip_duration,
                 'transition_duration': transition_duration,
+                # What the render above actually used, so the editor can
+                # rebuild the same video (loop copy, freeze-frame outro,
+                # transition type, audio padding and fade timing).
+                'render': {
+                    'final_clips': [str(p) for p in trimmed_videos],
+                    'transition_type': transition_type,
+                    'outro_duration': outro_pad,
+                    'loop_mode': bool(loop_mode),
+                    'fade_duration': fade_dur,
+                    'subtitle_style': sub_gen.style_name if sub_gen else None,
+                    'subtitle_overrides': dict(sub_gen.custom_overrides) if sub_gen else None,
+                    'subtitle_settings': sub_gen.resolved_settings() if sub_gen else None,
+                },
             })
 
         # Generate credits
@@ -853,6 +889,119 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
             shutil.rmtree(temp_dir)
 
 
+# ── Batch mode (--batch FILE) ──────────────────────────────────
+
+
+def parse_batch_file(text: str) -> list:
+    """Parse a batch file into [{"input_type": "prompt"|"script", "text": str}].
+
+    If any line is exactly ``---`` the file holds full scripts separated by
+    ``---`` lines. Otherwise it holds one topic per line; blank lines and
+    lines starting with ``#`` are ignored.
+    """
+    lines = (text or "").splitlines()
+    if any(line.strip() == "---" for line in lines):
+        entries, current = [], []
+        for line in lines + ["---"]:
+            if line.strip() == "---":
+                script = "\n".join(current).strip()
+                if script:
+                    entries.append({"input_type": "script", "text": script})
+                current = []
+            else:
+                current.append(line)
+        return entries
+
+    entries = []
+    for line in lines:
+        topic = line.strip()
+        if topic and not topic.startswith("#"):
+            entries.append({"input_type": "prompt", "text": topic})
+    return entries
+
+
+def batch_output_path(output_dir: Path, index: int, total: int, title: str) -> Path:
+    """``<dir>/<NN>-<sanitized title>.mp4`` (1-based, zero-padded)."""
+    from utils import sanitize_filename
+    width = max(2, len(str(total)))
+    return Path(output_dir) / f"{index:0{width}d}-{sanitize_filename(title, max_length=80)}.mp4"
+
+
+def _cli_words_per_second() -> float:
+    """Speaking rate used to estimate a script's duration (mirrors the TTS engine)."""
+    wps_override = os.getenv("WORDS_PER_SECOND", "").strip()
+    if wps_override:
+        return float(wps_override)
+    tts_engine = os.getenv("TTS_ENGINE", "kokoro").lower()
+    if tts_engine == "kokoro":
+        return 3.0 * float(os.getenv("KOKORO_SPEED", "1.0"))
+    if tts_engine == "chatterbox":
+        return 2.5
+    return 3.0
+
+
+def run_batch(entries: list, output_dir: Path, duration_minutes, orientation: str,
+              temp_dir: Path = None, keep_temp: bool = False, render=None) -> list:
+    """Render batch entries one at a time; a failure is reported and the run continues.
+
+    Returns one result dict per entry: {index, title, status, output, error, seconds}.
+    """
+    from app.utils.helpers import derive_video_title
+    from script_loader import estimate_duration_from_script
+
+    render = render or generate_video
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    total = len(entries)
+    wps = _cli_words_per_second()
+    results = []
+
+    for index, entry in enumerate(entries, start=1):
+        title = derive_video_title(entry["input_type"], entry["text"])
+        out_path = batch_output_path(output_dir, index, total, title)
+        print(f"\n{'#' * 70}\n[{index}/{total}] {title}\n{'#' * 70}")
+        started = time.time()
+        try:
+            if entry["input_type"] == "script":
+                minutes = estimate_duration_from_script(entry["text"], wps)
+                prompt, script_text = None, entry["text"]
+            else:
+                minutes = duration_minutes
+                prompt, script_text = entry["text"], None
+            render(
+                prompt=prompt,
+                duration_minutes=minutes,
+                output_path=out_path,
+                orientation=orientation,
+                temp_dir=(Path(temp_dir) / f"{index:02d}") if temp_dir else None,
+                keep_temp=keep_temp,
+                script_text=script_text,
+            )
+            results.append({"index": index, "title": title, "status": "done",
+                            "output": str(out_path), "error": None,
+                            "seconds": time.time() - started})
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            print(f"\nERROR in item {index}: {e}")
+            import traceback
+            traceback.print_exc()
+            results.append({"index": index, "title": title, "status": "failed",
+                            "output": None, "error": str(e).splitlines()[0] if str(e) else type(e).__name__,
+                            "seconds": time.time() - started})
+    return results
+
+
+def print_batch_summary(results: list) -> None:
+    print(f"\n{'=' * 70}\nBATCH SUMMARY\n{'=' * 70}")
+    print(f"{'#':>3}  {'Status':<7} {'Time':>7}  Output / error")
+    for r in results:
+        detail = r["output"] if r["status"] == "done" else r["error"]
+        print(f"{r['index']:>3}  {r['status']:<7} {r['seconds']:>6.0f}s  {detail}")
+    failed = sum(1 for r in results if r["status"] != "done")
+    print(f"{'-' * 70}\n{len(results) - failed} rendered, {failed} failed\n{'=' * 70}")
+
+
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -874,18 +1023,27 @@ def main():
         help="Narration script: path to .txt file OR inline text (used as-is, no LLM modification)"
     )
 
+    input_group.add_argument(
+        "--batch",
+        type=str,
+        metavar="FILE",
+        help="Render many videos one at a time: FILE holds one topic per line, or full "
+             "scripts separated by lines containing only '---'. --output is then a directory."
+    )
+
     parser.add_argument(
         "--duration",
         type=float,
         required=False,
-        help="Video duration in minutes (required for --prompt, optional for --script - auto-calculated from word count)"
+        help="Video duration in minutes (required for --prompt and for topics in --batch; "
+             "optional for --script - auto-calculated from word count)"
     )
 
     parser.add_argument(
         "--output",
         type=str,
         required=True,
-        help="Output video file path (e.g., video.mp4)"
+        help="Output video file path (e.g., video.mp4), or output directory with --batch"
     )
 
     parser.add_argument(
@@ -936,17 +1094,7 @@ def main():
             return 1
 
         # Calculate words_per_second for duration estimation
-        current_tts_engine = os.getenv("TTS_ENGINE", "kokoro").lower()
-        wps_override = os.getenv("WORDS_PER_SECOND", "").strip()
-        if wps_override:
-            words_per_second = float(wps_override)
-        elif current_tts_engine == "kokoro":
-            kokoro_speed = float(os.getenv("KOKORO_SPEED", "1.0"))
-            words_per_second = 3.0 * kokoro_speed
-        elif current_tts_engine == "chatterbox":
-            words_per_second = 2.5
-        else:
-            words_per_second = 3.0
+        words_per_second = _cli_words_per_second()
 
         # Estimate duration if not provided
         if duration_minutes is None:
@@ -954,6 +1102,24 @@ def main():
             print(f"Estimated duration: {duration_minutes:.2f} minutes ({len(script_text.split())} words at {words_per_second:.1f} wps)")
         else:
             print(f"Using user-specified duration: {duration_minutes} minutes")
+
+    elif args.batch:
+        try:
+            batch_entries = parse_batch_file(Path(args.batch).read_text(encoding="utf-8"))
+        except OSError as e:
+            print(f"Error reading batch file: {e}")
+            return 1
+        if not batch_entries:
+            print(f"Error: no topics or scripts found in {args.batch}")
+            return 1
+        if duration_minutes is None and any(e["input_type"] == "prompt" for e in batch_entries):
+            print("Error: --duration is required when the batch file contains topics")
+            return 1
+        if Path(args.output).suffix.lower() == ".mp4":
+            print("Error: with --batch, --output must be a directory (e.g. out/)")
+            return 1
+        kind = "scripts" if batch_entries[0]["input_type"] == "script" else "topics"
+        print(f"Loaded {len(batch_entries)} {kind} from {args.batch}")
 
     else:
         # Using --prompt, duration is required
@@ -984,6 +1150,18 @@ def main():
 
     # Get orientation from args or .env
     orientation = args.orientation if args.orientation else os.getenv("VIDEO_ORIENTATION", "landscape")
+
+    if args.batch:
+        results = run_batch(
+            batch_entries,
+            output_dir=Path(args.output),
+            duration_minutes=duration_minutes,
+            orientation=orientation,
+            temp_dir=Path(args.temp_dir) if args.temp_dir else None,
+            keep_temp=args.keep_temp,
+        )
+        print_batch_summary(results)
+        return 1 if any(r["status"] != "done" for r in results) else 0
 
     # Generate video
     try:

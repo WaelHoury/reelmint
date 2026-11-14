@@ -10,6 +10,20 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
+def cached_results(raw, max_results: int) -> Optional[list]:
+    """Cached items that can answer a request for ``max_results`` (see video_searcher.cached_results)."""
+    data = json.loads(raw)
+    if isinstance(data, dict):
+        items = data.get('items') or []
+        limit = int(data.get('limit') or 0)
+        if limit >= max_results or len(items) < limit:
+            return items
+        return None
+    if isinstance(data, list) and len(data) >= max_results:
+        return data
+    return None
+
+
 class PixabayMediaInfo:
     """Information about a Pixabay video or image. Duck-type compatible with VideoInfo."""
 
@@ -107,7 +121,8 @@ class PixabaySearcher:
 
     def search_videos(self, keywords: List[str], min_duration: float = 5.0,
                       max_results: int = 20,
-                      orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[PixabayMediaInfo]:
+                      orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any',
+                      page: int = 1) -> List[PixabayMediaInfo]:
         query = _build_query(keywords)
         params = {
             'key': self.api_key,
@@ -116,6 +131,8 @@ class PixabaySearcher:
             'video_type': 'film',
             'safesearch': 'true',
         }
+        if page and int(page) > 1:
+            params['page'] = int(page)
         if orientation in _ORIENTATION_MAP:
             params['orientation'] = _ORIENTATION_MAP[orientation]
 
@@ -193,17 +210,8 @@ class PixabaySearcher:
 
     def download(self, media_info: PixabayMediaInfo, output_path: Path,
                  chunk_size: int = 8192) -> Path:
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        response = requests.get(media_info.download_url, stream=True, timeout=30)
-        response.raise_for_status()
-
-        with open(output_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                if chunk:
-                    f.write(chunk)
-
+        from video_searcher import download_file
+        download_file(media_info.download_url, output_path, chunk_size=max(chunk_size, 65536))
         return output_path
 
 
@@ -218,29 +226,36 @@ class CachedPixabaySearcher(PixabaySearcher):
         self._cache_misses = 0
 
     @staticmethod
-    def _cache_key(keywords: List[str], orientation: str, media_type: str) -> str:
+    def _cache_key(keywords: List[str], orientation: str, media_type: str, page: int = 1) -> str:
         normalized = "|".join(sorted(k.lower().strip() for k in keywords))
         raw = f"pixabay_{media_type}:{orientation}:{normalized}"
+        if page and int(page) > 1:
+            raw += f":page={int(page)}"
         return f"pixabay_{media_type}_cache:{hashlib.md5(raw.encode()).hexdigest()}"
 
     def search_videos(self, keywords: List[str], min_duration: float = 5.0,
                       max_results: int = 20,
-                      orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[PixabayMediaInfo]:
+                      orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any',
+                      page: int = 1) -> List[PixabayMediaInfo]:
+        key = self._cache_key(keywords, orientation or 'any', 'video', page)
         if self._redis:
-            key = self._cache_key(keywords, orientation or 'any', 'video')
             try:
                 cached = self._redis.get(key)
-                if cached:
+                hit = cached_results(cached, max_results) if cached else None
+                if hit is not None:
                     self._cache_hits += 1
-                    return [PixabayMediaInfo(d, media_type="video") for d in json.loads(cached)][:max_results]
+                    videos = [PixabayMediaInfo(d, media_type="video") for d in hit]
+                    return [v for v in videos if v.duration >= min_duration][:max_results]
             except Exception:
                 pass
 
         self._cache_misses += 1
-        videos = super().search_videos(keywords, min_duration, max_results, orientation)
+        if page and int(page) > 1:
+            videos = super().search_videos(keywords, min_duration, max_results, orientation, page=page)
+        else:
+            videos = super().search_videos(keywords, min_duration, max_results, orientation)
 
         if self._redis and videos:
-            key = self._cache_key(keywords, orientation or 'any', 'video')
             try:
                 serializable = []
                 for v in videos:
@@ -254,7 +269,8 @@ class CachedPixabaySearcher(PixabaySearcher):
                             'small': {'url': v.preview_url, 'width': 960, 'height': 540},
                         },
                     })
-                self._redis.setex(key, self._cache_ttl, json.dumps(serializable))
+                self._redis.setex(key, self._cache_ttl,
+                                  json.dumps({'limit': max_results, 'items': serializable}))
             except Exception:
                 pass
 
@@ -266,9 +282,10 @@ class CachedPixabaySearcher(PixabaySearcher):
             key = self._cache_key(keywords, orientation or 'any', 'image')
             try:
                 cached = self._redis.get(key)
-                if cached:
+                hit = cached_results(cached, max_results) if cached else None
+                if hit is not None:
                     self._cache_hits += 1
-                    return [PixabayMediaInfo(d, media_type="image") for d in json.loads(cached)][:max_results]
+                    return [PixabayMediaInfo(d, media_type="image") for d in hit][:max_results]
             except Exception:
                 pass
 
@@ -289,7 +306,8 @@ class CachedPixabaySearcher(PixabaySearcher):
                         'imageWidth': img.width,
                         'imageHeight': img.height,
                     })
-                self._redis.setex(key, self._cache_ttl, json.dumps(serializable))
+                self._redis.setex(key, self._cache_ttl,
+                                  json.dumps({'limit': max_results, 'items': serializable}))
             except Exception:
                 pass
 

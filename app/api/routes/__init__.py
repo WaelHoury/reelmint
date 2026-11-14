@@ -11,6 +11,7 @@ from .editor import router as editor_router
 from .tts import router as tts_router
 from .publish import router as publish_router
 from .publish import video_publish_router
+from .batches import router as batches_router
 
 __all__ = [
     'sessions_router',
@@ -24,4 +25,5 @@ __all__ = [
     'tts_router',
     'publish_router',
     'video_publish_router',
+    'batches_router',
 ]

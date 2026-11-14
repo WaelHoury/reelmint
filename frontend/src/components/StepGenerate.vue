@@ -228,7 +228,7 @@ async function applySubtitleChanges() {
     <!-- Progress -->
     <div v-if="status === 'queued' || status === 'processing'" class="progress-section">
       <div class="progress-icon ce-pulse">
-        <el-icon :size="48" color="var(--ce-purple-light)"><Loading /></el-icon>
+        <el-icon :size="48" color="var(--ce-accent-light)"><Loading /></el-icon>
       </div>
       <h3 class="progress-heading">{{ status === 'queued' ? 'Queued...' : 'Generating your video...' }}</h3>
       <p v-if="status === 'queued' && queuePosition" class="step-label">
@@ -483,30 +483,7 @@ async function applySubtitleChanges() {
   font-weight: 600;
 }
 
-.action-btn-download {
-  box-shadow: 0 10px 30px -10px rgba(109, 40, 217, 0.55);
-}
-
-.action-btn-edit {
-  border-color: rgba(74, 222, 128, 0.4);
-  color: #bbf7d0;
-  background: rgba(22, 163, 74, 0.12);
-}
-
-.action-btn-edit:hover {
-  border-color: #4ade80;
-  color: #fff;
-  background: rgba(22, 163, 74, 0.22);
-}
-
-.action-btn-new {
-  border-color: rgba(167, 139, 250, 0.35);
-  color: var(--ce-purple-light);
-}
-
-.action-btn-new:hover {
-  border-color: var(--ce-purple-light);
-}
+/* Download = primary; Edit / Subtitles / New share the secondary style */
 
 .subtitle-editor {
   max-width: 500px;
