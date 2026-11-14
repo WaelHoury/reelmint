@@ -13,31 +13,39 @@ class R2StorageService:
     def __init__(self):
         from app.core.config import settings
         self._settings = settings
-        self._client = None
-        self._bucket = None
+        self._client_obj = None
 
-        if not settings.use_r2_storage:
-            return
+    @property
+    def _bucket(self):
+        return self._settings.r2_bucket_name
 
-        import boto3
-        from botocore.config import Config as BotoConfig
+    @property
+    def _client(self):
+        """boto3 client, created on first use so importing this module never
+        needs R2 credentials (R2 is optional and off by default)."""
+        if self._client_obj is None and self._settings.use_r2_storage:
+            import boto3
+            from botocore.config import Config as BotoConfig
 
-        self._client = boto3.client(
-            "s3",
-            endpoint_url=f"https://{settings.r2_account_id}.r2.cloudflarestorage.com",
-            aws_access_key_id=settings.r2_access_key_id,
-            aws_secret_access_key=settings.r2_secret_access_key,
-            config=BotoConfig(
-                signature_version="s3v4",
-                retries={"max_attempts": 3, "mode": "adaptive"},
-            ),
-            region_name="auto",
-        )
-        self._bucket = settings.r2_bucket_name
+            account = (self._settings.r2_account_id or "").strip()
+            if not account:
+                raise RuntimeError("USE_R2_STORAGE is on but R2_ACCOUNT_ID is empty")
+            self._client_obj = boto3.client(
+                "s3",
+                endpoint_url=f"https://{account}.r2.cloudflarestorage.com",
+                aws_access_key_id=self._settings.r2_access_key_id,
+                aws_secret_access_key=self._settings.r2_secret_access_key,
+                config=BotoConfig(
+                    signature_version="s3v4",
+                    retries={"max_attempts": 3, "mode": "adaptive"},
+                ),
+                region_name="auto",
+            )
+        return self._client_obj
 
     @property
     def enabled(self) -> bool:
-        return self._client is not None
+        return bool(self._settings.use_r2_storage)
 
     # ─── Content-type helpers ───
 
