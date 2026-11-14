@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from scene_planner import ScenePlanner
 from tts_generator import TTSGenerator
 from video_searcher import VideoSearcher
+from app.media.multi_source_searcher import MultiSourceSearcher
 from clip_matcher import CLIPMatcher
 from video_assembler import VideoAssembler
 from license_tracker import LicenseTracker
@@ -148,7 +149,23 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg")
             )
 
-        searcher = VideoSearcher(api_key=os.getenv("PEXELS_API_KEY"))
+        pexels_searcher = VideoSearcher(api_key=os.getenv("PEXELS_API_KEY"))
+
+        pixabay_searcher = None
+        enable_pixabay = os.getenv("ENABLE_PIXABAY", "false").lower() == "true"
+        enable_image_fallback = os.getenv("ENABLE_IMAGE_FALLBACK", "false").lower() == "true"
+        if enable_pixabay:
+            pixabay_key = os.getenv("PIXABAY_API_KEY", "")
+            if pixabay_key:
+                from app.media.pixabay_search import PixabaySearcher
+                pixabay_searcher = PixabaySearcher(api_key=pixabay_key)
+
+        searcher = MultiSourceSearcher(
+            pexels_searcher=pexels_searcher,
+            pixabay_searcher=pixabay_searcher,
+            enable_pixabay=enable_pixabay,
+            enable_image_fallback=enable_image_fallback,
+        )
 
         assembler = VideoAssembler(
             ffmpeg_path=os.getenv("FFMPEG_PATH", "ffmpeg"),
@@ -450,6 +467,33 @@ def generate_video(prompt: str, duration_minutes: float, output_path: Path,
                 if not videos:
                     print(f"    Warning: No videos found, trying broader search...")
                     videos = searcher.search(clip.keywords[:1], max_results=20, orientation=orientation)
+
+                if not videos and searcher.enable_image_fallback:
+                    # Image fallback: search for still images, convert with Ken Burns
+                    print(f"    No videos found. Trying image fallback...")
+                    from app.media.assembler import KEN_BURNS_EFFECTS
+                    images = searcher.search_images(clip.keywords, max_results=3, orientation=orientation)
+                    if images:
+                        best_image = images[0]
+                        image_ext = '.jpg' if 'jpeg' in best_image.download_url.lower() or 'jpg' in best_image.download_url.lower() else '.png'
+                        image_path = clip_dir / f"fallback_image{image_ext}"
+                        searcher.download_image(best_image, image_path)
+
+                        effect = KEN_BURNS_EFFECTS[i % len(KEN_BURNS_EFFECTS)]
+                        trimmed_path = clip_dir / "trimmed.mp4"
+                        assembler.image_to_video(
+                            image_path, trimmed_path,
+                            duration_sec=clip_duration,
+                            orientation=orientation,
+                            effect=effect,
+                            color_grade_filter=color_grade_filter,
+                        )
+
+                        with clip_lock:
+                            tracker.add_asset(best_image.to_dict(), i)
+
+                        print(f"  Clip {i+1}/{num_clips} done (image fallback, {effect})")
+                        return trimmed_path
 
                 if not videos:
                     raise ValueError(f"No videos found for clip {i} keywords: {clip.keywords}")

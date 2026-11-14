@@ -22,6 +22,7 @@ class VideoInfo:
             provider: Source provider name
         """
         self.provider = provider
+        self.media_type = "video"
         self.id = data.get('id')
         self.url = data.get('url', '')
         self.author = data.get('user', {}).get('name', 'Unknown')

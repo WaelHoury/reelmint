@@ -18,6 +18,9 @@ ORIENTATION_RESOLUTION = {
     'square': (1080, 1080),
 }
 
+# Ken Burns effect variants for image-to-video conversion
+KEN_BURNS_EFFECTS = ['zoom_in', 'zoom_out', 'pan_right']
+
 
 def get_resolution(orientation: str) -> Tuple[int, int]:
     """Get (width, height) for a video orientation."""
@@ -224,6 +227,75 @@ class VideoAssembler:
             '-t', str(duration_sec),
             '-vf', vf_string,
             '-r', '30',
+            '-pix_fmt', 'yuv420p',
+            '-c:v', 'libx264',
+            '-preset', settings.ffmpeg_intermediate_preset,
+            '-crf', str(settings.ffmpeg_intermediate_crf),
+            '-threads', str(settings.ffmpeg_threads),
+            '-an',
+            '-y',
+            str(output_path)
+        ]
+
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
+        return output_path
+
+    def image_to_video(self, image_path: Path, output_path: Path,
+                       duration_sec: float, orientation: str = 'landscape',
+                       effect: str = 'zoom_in',
+                       color_grade_filter: str = None) -> Path:
+        """Convert a still image to a video clip using Ken Burns effect.
+
+        Uses FFmpeg zoompan filter for slow zoom/pan animation.
+        Output format matches process_clip() for seamless concatenation.
+
+        Args:
+            image_path: Path to source image (JPG/PNG)
+            output_path: Path for output video clip
+            duration_sec: Desired clip duration in seconds
+            orientation: Video orientation for target resolution
+            effect: One of 'zoom_in', 'zoom_out', 'pan_right'
+            color_grade_filter: Optional FFmpeg filter for color grading
+
+        Returns:
+            Path to generated video clip
+        """
+        image_path = Path(image_path)
+        output_path = Path(output_path)
+
+        w, h = get_resolution(orientation)
+        fps = 30
+        total_frames = int(duration_sec * fps)
+
+        if effect == 'zoom_in':
+            zp = (f"zoompan=z='1+0.2*on/{total_frames}'"
+                  f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                  f":d={total_frames}:s={w}x{h}:fps={fps}")
+        elif effect == 'zoom_out':
+            zp = (f"zoompan=z='1.2-0.2*on/{total_frames}'"
+                  f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                  f":d={total_frames}:s={w}x{h}:fps={fps}")
+        elif effect == 'pan_right':
+            zp = (f"zoompan=z='1.1'"
+                  f":x='0.1*iw*on/{total_frames}':y='ih/2-(ih/zoom/2)'"
+                  f":d={total_frames}:s={w}x{h}:fps={fps}")
+        else:
+            zp = (f"zoompan=z='1'"
+                  f":x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'"
+                  f":d={total_frames}:s={w}x{h}:fps={fps}")
+
+        vf_parts = [zp]
+        if color_grade_filter:
+            vf_parts.append(color_grade_filter)
+        vf_string = ','.join(vf_parts)
+
+        cmd = [
+            self.ffmpeg,
+            '-loop', '1',
+            '-i', str(image_path),
+            '-vf', vf_string,
+            '-t', str(duration_sec),
+            '-r', str(fps),
             '-pix_fmt', 'yuv420p',
             '-c:v', 'libx264',
             '-preset', settings.ffmpeg_intermediate_preset,

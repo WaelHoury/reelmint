@@ -172,8 +172,65 @@ class ScenePlanner:
     }
 
     # Concise keyword rules - used in multiple prompts
-    KEYWORD_RULES = """KEYWORDS: Use only filmable nouns (things you can point a camera at).
-Good: bee, flower, jar, ocean, clock. Bad: process, energy, concept, nutrients, enzymes."""
+    KEYWORD_RULES = """KEYWORDS (CRITICAL - follow these rules exactly):
+1. Use ONLY concrete, filmable nouns — things a camera can physically record
+2. Test each keyword: "Can I find this on a stock video site?" If no, replace it
+3. NEVER use: process, energy, concept, system, importance, nutrients, enzymes, transformation, method, approach, technique, factor, aspect, element, principle
+4. ALWAYS prefer: the physical object, location, animal, tool, body part
+5. Use "noun + modifier" pairs: "coffee shop" not "coffee", "woman typing laptop" not "laptop"
+6. Examples:
+   - Topic "photosynthesis" -> keywords: ["leaf", "sunlight", "tree canopy"]
+   - Topic "economics" -> keywords: ["coins", "stock market screen", "factory"]
+   - Topic "sleep science" -> keywords: ["bed", "pillow", "brain scan", "alarm clock"]"""
+
+    # Abstract words that should never appear as stock footage keywords
+    ABSTRACT_BLOCKLIST = {
+        'process', 'energy', 'concept', 'system', 'importance', 'nutrients',
+        'enzymes', 'transformation', 'method', 'approach', 'technique',
+        'factor', 'aspect', 'element', 'principle', 'mechanism', 'idea',
+        'thing', 'stuff', 'way', 'impact', 'effect', 'result', 'outcome',
+        'benefit', 'advantage', 'challenge', 'issue', 'problem', 'solution',
+        'strategy', 'practice', 'experience', 'information', 'knowledge',
+        'ability', 'capacity', 'potential', 'quality', 'level', 'type',
+    }
+
+    @staticmethod
+    def _refine_keywords(clips: list) -> list:
+        """Post-process clip keywords: remove abstract words, supplement from visual_description."""
+        for clip in clips:
+            if isinstance(clip, dict):
+                keywords = clip.get('keywords', [])
+                desc = clip.get('visual_description', '')
+            else:
+                keywords = clip.keywords
+                desc = clip.visual_description
+
+            filtered = [k for k in keywords if k.lower().strip() not in ScenePlanner.ABSTRACT_BLOCKLIST]
+
+            if len(filtered) < 2 and desc:
+                common = {'the', 'and', 'with', 'from', 'that', 'this', 'into',
+                          'over', 'through', 'during', 'while', 'close', 'wide',
+                          'shot', 'showing', 'view', 'scene', 'camera', 'angle',
+                          'visual', 'slowly', 'quickly', 'moving', 'reveals'}
+                desc_words = re.findall(r'\b[a-z]{3,}\b', desc.lower())
+                candidates = [w for w in desc_words
+                              if w not in ScenePlanner.ABSTRACT_BLOCKLIST
+                              and w not in common
+                              and w not in [k.lower() for k in filtered]]
+                seen = set()
+                unique = []
+                for c in candidates:
+                    if c not in seen:
+                        seen.add(c)
+                        unique.append(c)
+                filtered.extend(unique[:3 - len(filtered)])
+
+            if isinstance(clip, dict):
+                clip['keywords'] = filtered[:5]
+            else:
+                clip.keywords = filtered[:5]
+
+        return clips
 
     @classmethod
     def _build_continuous_prompt(cls, style: str = 'viral') -> str:
@@ -832,6 +889,7 @@ Output ONLY the JSON array."""
                 )
 
                 # Build VideoPlan
+                clips_data = self._refine_keywords(clips_data)
                 plan = VideoPlan(
                     narration=narration,
                     clips=[VisualClip(**clip) for clip in clips_data]
@@ -961,9 +1019,10 @@ Include {num_clips} clips."""
                   f"(target: {expected_words})")
             narration = truncated
 
+        refined_clips = self._refine_keywords(data['clips'])
         plan = VideoPlan(
             narration=narration,
-            clips=[VisualClip(**clip) for clip in data['clips']]
+            clips=[VisualClip(**clip) for clip in refined_clips]
         )
 
         # Validate narration has reasonable word count
@@ -1138,7 +1197,8 @@ IMPORTANT: Output ONLY valid JSON with "clips" array. Each clip needs "keywords"
                 content = match.group(1)
 
         data = json.loads(content)
-        clips = [VisualClip(**clip) for clip in data['clips']]
+        refined = self._refine_keywords(data['clips'])
+        clips = [VisualClip(**clip) for clip in refined]
 
         # Validate reasonable clip count
         if len(clips) < expected_clips * 0.5:

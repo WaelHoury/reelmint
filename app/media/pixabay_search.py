@@ -1,0 +1,255 @@
+"""Video and image search from Pixabay API."""
+
+import hashlib
+import json
+import logging
+import requests
+from typing import List, Dict, Optional, Literal
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+
+class PixabayMediaInfo:
+    """Information about a Pixabay video or image. Duck-type compatible with VideoInfo."""
+
+    def __init__(self, data: dict, media_type: str = "video"):
+        self.provider = "Pixabay"
+        self.media_type = media_type
+        self.id = data.get('id')
+        self.url = data.get('pageURL', '')
+        self.author = data.get('user', 'Unknown')
+        self.license = "Pixabay License"
+        self.license_url = "https://pixabay.com/service/license-summary/"
+
+        if media_type == "video":
+            self.duration = data.get('duration', 0)
+            videos = data.get('videos', {})
+            # Prefer large > medium > small
+            best = videos.get('large', videos.get('medium', videos.get('small', {})))
+            self.download_url = best.get('url', '')
+            self.width = best.get('width', 0)
+            self.height = best.get('height', 0)
+            preview = videos.get('small', videos.get('tiny', {}))
+            self.preview_url = preview.get('url', self.download_url)
+        else:
+            self.duration = 0
+            self.download_url = data.get('largeImageURL', data.get('webformatURL', ''))
+            self.width = data.get('imageWidth', 0)
+            self.height = data.get('imageHeight', 0)
+            self.preview_url = data.get('webformatURL', self.download_url)
+
+    @property
+    def orientation(self) -> str:
+        if self.width == 0 or self.height == 0:
+            return 'unknown'
+        ratio = self.width / self.height
+        if ratio > 1.1:
+            return 'landscape'
+        elif ratio < 0.9:
+            return 'portrait'
+        return 'square'
+
+    def to_dict(self) -> Dict:
+        return {
+            'url': self.url,
+            'author': self.author,
+            'provider': self.provider,
+            'license': self.license,
+        }
+
+
+# Map our orientation names to Pixabay's API parameter values
+_ORIENTATION_MAP = {
+    'landscape': 'horizontal',
+    'portrait': 'vertical',
+}
+
+
+class PixabaySearcher:
+    """Search and download videos/images from Pixabay."""
+
+    VIDEOS_URL = "https://pixabay.com/api/videos/"
+    IMAGES_URL = "https://pixabay.com/api/"
+
+    def __init__(self, api_key: str):
+        if not api_key:
+            raise ValueError("Pixabay API key is required")
+        self.api_key = api_key
+
+    def search_videos(self, keywords: List[str], min_duration: float = 5.0,
+                      max_results: int = 20,
+                      orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[PixabayMediaInfo]:
+        query = " ".join(keywords)
+        params = {
+            'key': self.api_key,
+            'q': query,
+            'per_page': min(max_results * 2, 200),
+            'video_type': 'film',
+            'safesearch': 'true',
+        }
+        if orientation in _ORIENTATION_MAP:
+            params['orientation'] = _ORIENTATION_MAP[orientation]
+
+        try:
+            response = requests.get(self.VIDEOS_URL, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            logger.warning("Pixabay video search failed: %s", e)
+            return []
+
+        videos = []
+        for hit in data.get('hits', []):
+            info = PixabayMediaInfo(hit, media_type="video")
+            if info.duration >= min_duration and info.download_url:
+                if orientation == 'any' or info.orientation == orientation:
+                    videos.append(info)
+            if len(videos) >= max_results:
+                break
+
+        return videos
+
+    def search_images(self, keywords: List[str], max_results: int = 10,
+                      orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[PixabayMediaInfo]:
+        query = " ".join(keywords)
+        params = {
+            'key': self.api_key,
+            'q': query,
+            'per_page': min(max_results * 2, 200),
+            'image_type': 'photo',
+            'safesearch': 'true',
+        }
+        if orientation in _ORIENTATION_MAP:
+            params['orientation'] = _ORIENTATION_MAP[orientation]
+
+        try:
+            response = requests.get(self.IMAGES_URL, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+        except Exception as e:
+            logger.warning("Pixabay image search failed: %s", e)
+            return []
+
+        images = []
+        for hit in data.get('hits', []):
+            info = PixabayMediaInfo(hit, media_type="image")
+            if info.download_url:
+                if orientation == 'any' or info.orientation == orientation:
+                    images.append(info)
+            if len(images) >= max_results:
+                break
+
+        return images
+
+    def download(self, media_info: PixabayMediaInfo, output_path: Path,
+                 chunk_size: int = 8192) -> Path:
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        response = requests.get(media_info.download_url, stream=True, timeout=30)
+        response.raise_for_status()
+
+        with open(output_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    f.write(chunk)
+
+        return output_path
+
+
+class CachedPixabaySearcher(PixabaySearcher):
+    """PixabaySearcher with Redis-backed result caching."""
+
+    def __init__(self, api_key: str, redis_client=None, cache_ttl: int = 21600):
+        super().__init__(api_key)
+        self._redis = redis_client
+        self._cache_ttl = cache_ttl
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    @staticmethod
+    def _cache_key(keywords: List[str], orientation: str, media_type: str) -> str:
+        normalized = "|".join(sorted(k.lower().strip() for k in keywords))
+        raw = f"pixabay_{media_type}:{orientation}:{normalized}"
+        return f"pixabay_{media_type}_cache:{hashlib.md5(raw.encode()).hexdigest()}"
+
+    def search_videos(self, keywords: List[str], min_duration: float = 5.0,
+                      max_results: int = 20,
+                      orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[PixabayMediaInfo]:
+        if self._redis:
+            key = self._cache_key(keywords, orientation or 'any', 'video')
+            try:
+                cached = self._redis.get(key)
+                if cached:
+                    self._cache_hits += 1
+                    return [PixabayMediaInfo(d, media_type="video") for d in json.loads(cached)][:max_results]
+            except Exception:
+                pass
+
+        self._cache_misses += 1
+        videos = super().search_videos(keywords, min_duration, max_results, orientation)
+
+        if self._redis and videos:
+            key = self._cache_key(keywords, orientation or 'any', 'video')
+            try:
+                serializable = []
+                for v in videos:
+                    serializable.append({
+                        'id': v.id,
+                        'pageURL': v.url,
+                        'user': v.author,
+                        'duration': v.duration,
+                        'videos': {
+                            'large': {'url': v.download_url, 'width': v.width, 'height': v.height},
+                            'small': {'url': v.preview_url, 'width': 960, 'height': 540},
+                        },
+                    })
+                self._redis.setex(key, self._cache_ttl, json.dumps(serializable))
+            except Exception:
+                pass
+
+        return videos
+
+    def search_images(self, keywords: List[str], max_results: int = 10,
+                      orientation: Optional[Literal['landscape', 'portrait', 'square', 'any']] = 'any') -> List[PixabayMediaInfo]:
+        if self._redis:
+            key = self._cache_key(keywords, orientation or 'any', 'image')
+            try:
+                cached = self._redis.get(key)
+                if cached:
+                    self._cache_hits += 1
+                    return [PixabayMediaInfo(d, media_type="image") for d in json.loads(cached)][:max_results]
+            except Exception:
+                pass
+
+        self._cache_misses += 1
+        images = super().search_images(keywords, max_results, orientation)
+
+        if self._redis and images:
+            key = self._cache_key(keywords, orientation or 'any', 'image')
+            try:
+                serializable = []
+                for img in images:
+                    serializable.append({
+                        'id': img.id,
+                        'pageURL': img.url,
+                        'user': img.author,
+                        'largeImageURL': img.download_url,
+                        'webformatURL': img.preview_url,
+                        'imageWidth': img.width,
+                        'imageHeight': img.height,
+                    })
+                self._redis.setex(key, self._cache_ttl, json.dumps(serializable))
+            except Exception:
+                pass
+
+        return images
+
+    @property
+    def cache_stats(self) -> Dict:
+        return {
+            'hits': self._cache_hits,
+            'misses': self._cache_misses,
+            'hit_rate': self._cache_hits / max(1, self._cache_hits + self._cache_misses),
+        }

@@ -184,6 +184,7 @@ class VideoService:
             raise ValueError(f"Invalid clip index: {clip_index}")
 
         from video_searcher import CachedVideoSearcher
+        from app.media.multi_source_searcher import MultiSourceSearcher
 
         # Extract keywords from description if not provided
         if keywords is None:
@@ -193,10 +194,26 @@ class VideoService:
 
         # Search for new video (with cache)
         redis_client = Redis.from_url(settings.redis_url)
-        searcher = CachedVideoSearcher(
+        pexels_searcher = CachedVideoSearcher(
             api_key=settings.pexels_api_key,
             redis_client=redis_client,
             cache_ttl=settings.clip_search_cache_ttl,
+        )
+
+        pixabay_searcher = None
+        if settings.enable_pixabay and settings.pixabay_api_key:
+            from app.media.pixabay_search import CachedPixabaySearcher
+            pixabay_searcher = CachedPixabaySearcher(
+                api_key=settings.pixabay_api_key,
+                redis_client=redis_client,
+                cache_ttl=settings.clip_search_cache_ttl,
+            )
+
+        searcher = MultiSourceSearcher(
+            pexels_searcher=pexels_searcher,
+            pixabay_searcher=pixabay_searcher,
+            enable_pixabay=settings.enable_pixabay,
+            enable_image_fallback=settings.enable_image_fallback,
         )
         videos = searcher.search(keywords, max_results=5, orientation=session.orientation)
 
@@ -212,6 +229,8 @@ class VideoService:
             'author_url': video_info.url if video_info else None,
             'duration_seconds': video_info.duration if video_info else None,
             'search_status': 'ready' if video_info else 'failed',
+            'media_type': 'video' if video_info else None,
+            'provider': video_info.provider if video_info else None,
         }
 
         session_store.update(session)
@@ -369,6 +388,7 @@ def generate_clips_task(session_id: str):
 
         from app.core import ScenePlanner
         from video_searcher import CachedVideoSearcher
+        from app.media.multi_source_searcher import MultiSourceSearcher
 
         # --- Stage 1: LLM clip descriptions ---
         t_llm = time.time()
@@ -402,13 +422,29 @@ def generate_clips_task(session_id: str):
         ]
         session_store.update(session)
 
-        # --- Stage 2: Parallel Pexels searches ---
+        # --- Stage 2: Parallel media searches ---
         t_search = time.time()
         redis_client = Redis.from_url(settings.redis_url)
-        searcher = CachedVideoSearcher(
+        pexels_searcher = CachedVideoSearcher(
             api_key=settings.pexels_api_key,
             redis_client=redis_client,
             cache_ttl=settings.clip_search_cache_ttl,
+        )
+
+        pixabay_searcher = None
+        if settings.enable_pixabay and settings.pixabay_api_key:
+            from app.media.pixabay_search import CachedPixabaySearcher
+            pixabay_searcher = CachedPixabaySearcher(
+                api_key=settings.pixabay_api_key,
+                redis_client=redis_client,
+                cache_ttl=settings.clip_search_cache_ttl,
+            )
+
+        searcher = MultiSourceSearcher(
+            pexels_searcher=pexels_searcher,
+            pixabay_searcher=pixabay_searcher,
+            enable_pixabay=settings.enable_pixabay,
+            enable_image_fallback=settings.enable_image_fallback,
         )
 
         total_clips = len(plan.clips)
@@ -432,6 +468,26 @@ def generate_clips_task(session_id: str):
                     videos = searcher.search(generic, max_results=5, orientation=session.orientation)
                     video_info = videos[0] if videos else None
 
+                # Image fallback via Pixabay
+                if not video_info and settings.enable_image_fallback:
+                    images = searcher.search_images(clip.keywords, max_results=3, orientation=session.orientation)
+                    if images:
+                        image_info = images[0]
+                        return idx, {
+                            'index': idx,
+                            'keywords': clip.keywords,
+                            'visual_description': clip.visual_description,
+                            'video_preview_url': image_info.preview_url,
+                            'video_id': str(image_info.id),
+                            'author': image_info.author,
+                            'author_url': image_info.url,
+                            'duration_seconds': None,
+                            'search_status': 'ready',
+                            'search_error': None,
+                            'media_type': 'image',
+                            'provider': 'Pixabay',
+                        }
+
                 return idx, {
                     'index': idx,
                     'keywords': clip.keywords,
@@ -443,6 +499,8 @@ def generate_clips_task(session_id: str):
                     'duration_seconds': video_info.duration if video_info else None,
                     'search_status': 'ready' if video_info else 'failed',
                     'search_error': None if video_info else 'No matching videos found',
+                    'media_type': 'video' if video_info else None,
+                    'provider': video_info.provider if video_info else None,
                 }
             except Exception as e:
                 logger.warning("Clip %d search failed: %s", idx, e)

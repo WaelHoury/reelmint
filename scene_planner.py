@@ -172,8 +172,68 @@ class ScenePlanner:
     }
 
     # Concise keyword rules - used in multiple prompts
-    KEYWORD_RULES = """KEYWORDS: Use only filmable nouns (things you can point a camera at).
-Good: bee, flower, jar, ocean, clock. Bad: process, energy, concept, nutrients, enzymes."""
+    KEYWORD_RULES = """KEYWORDS (CRITICAL - follow these rules exactly):
+1. Use ONLY concrete, filmable nouns — things a camera can physically record
+2. Test: "Can I find this on a stock video site?" If no, replace it
+3. NEVER use: process, energy, concept, system, importance, nutrients, enzymes, transformation, method, approach, technique, factor, aspect, element, principle
+4. ALWAYS prefer: the physical object, location, animal, tool, body part
+5. Use "noun + modifier" pairs: "coffee shop" not "coffee", "woman typing laptop" not "laptop"
+6. Examples:
+   - Topic "photosynthesis" -> keywords: ["leaf", "sunlight", "tree canopy"]
+   - Topic "economics" -> keywords: ["coins", "stock market screen", "factory"]
+   - Topic "sleep science" -> keywords: ["bed", "pillow", "brain scan", "alarm clock"]"""
+
+    # Abstract words that should never appear as stock footage keywords
+    ABSTRACT_BLOCKLIST = {
+        'process', 'energy', 'concept', 'system', 'importance', 'nutrients',
+        'enzymes', 'transformation', 'method', 'approach', 'technique',
+        'factor', 'aspect', 'element', 'principle', 'mechanism', 'idea',
+        'thing', 'stuff', 'way', 'impact', 'effect', 'result', 'outcome',
+        'benefit', 'advantage', 'challenge', 'issue', 'problem', 'solution',
+        'strategy', 'practice', 'experience', 'information', 'knowledge',
+        'ability', 'capacity', 'potential', 'quality', 'level', 'type',
+    }
+
+    @staticmethod
+    def _refine_keywords(clips: list) -> list:
+        """Post-process clip keywords: remove abstract words, supplement from visual_description."""
+        for clip in clips:
+            if isinstance(clip, dict):
+                keywords = clip.get('keywords', [])
+                desc = clip.get('visual_description', '')
+            else:
+                keywords = clip.keywords
+                desc = clip.visual_description
+
+            # Filter out abstract words
+            filtered = [k for k in keywords if k.lower().strip() not in ScenePlanner.ABSTRACT_BLOCKLIST]
+
+            # If too many were removed, extract nouns from visual_description
+            if len(filtered) < 2 and desc:
+                common = {'the', 'and', 'with', 'from', 'that', 'this', 'into',
+                          'over', 'through', 'during', 'while', 'close', 'wide',
+                          'shot', 'showing', 'view', 'scene', 'camera', 'angle',
+                          'visual', 'slowly', 'quickly', 'moving', 'reveals'}
+                desc_words = re.findall(r'\b[a-z]{3,}\b', desc.lower())
+                candidates = [w for w in desc_words
+                              if w not in ScenePlanner.ABSTRACT_BLOCKLIST
+                              and w not in common
+                              and w not in [k.lower() for k in filtered]]
+                # Deduplicate while preserving order
+                seen = set()
+                unique = []
+                for c in candidates:
+                    if c not in seen:
+                        seen.add(c)
+                        unique.append(c)
+                filtered.extend(unique[:3 - len(filtered)])
+
+            if isinstance(clip, dict):
+                clip['keywords'] = filtered[:5]
+            else:
+                clip.keywords = filtered[:5]
+
+        return clips
 
     @classmethod
     def _build_continuous_prompt(cls, style: str = 'viral') -> str:
@@ -662,15 +722,22 @@ OUTPUT FORMAT (JSON array only):
 
 RULES:
 - Each clip = 4-10 seconds of video footage
-- Keywords must be CONCRETE, FILMABLE nouns (not abstract concepts)
-- Use words a photographer would use to label footage
 - Match clips to the narration content — show what's being discussed
 - VARY SHOTS: alternate wide → close-up → detail → action → wide
 - Do NOT repeat the same visual concept twice in a row
 - Each clip should feel like a natural visual progression
 
-WRONG keywords: ["process", "concept", "idea", "thing"]
-RIGHT keywords: ["brain", "neurons", "clock", "sunset"]
+KEYWORD REQUIREMENTS (CRITICAL - follow exactly):
+1. Use ONLY concrete, filmable nouns — things a camera can physically record
+2. Test: "Can I find this on a stock video site?" If no, replace it
+3. NEVER use: process, energy, concept, system, importance, nutrients, enzymes, transformation, method, approach, technique, factor, aspect, element, principle
+4. ALWAYS prefer: the physical object, location, animal, tool, body part
+5. Use "noun + modifier" pairs: "coffee shop" not "coffee", "woman typing laptop" not "laptop"
+6. Examples:
+   - Topic "photosynthesis" -> ["leaf", "sunlight", "tree canopy"]
+   - Topic "economics" -> ["coins", "stock market screen", "factory"]
+   - WRONG: ["process", "concept", "idea", "thing", "importance"]
+   - RIGHT: ["brain", "neurons", "clock tower", "sunset beach"]
 
 Output ONLY the JSON array, nothing else."""
 
@@ -787,7 +854,8 @@ Output ONLY the JSON array."""
                                 'visual_description': f'{angle.title()} shot for segment {len(all_clips) + 1}'
                             })
 
-        return all_clips[:num_clips]
+        all_clips = self._refine_keywords(all_clips[:num_clips])
+        return all_clips
 
     def generate_continuous(self, prompt: str, duration_minutes: float,
                             words_per_second: float = 3.0,
@@ -963,9 +1031,10 @@ Include {num_clips} clips."""
                   f"(target: {expected_words})")
             narration = truncated
 
+        refined_clips = self._refine_keywords(data['clips'])
         plan = VideoPlan(
             narration=narration,
-            clips=[VisualClip(**clip) for clip in data['clips']]
+            clips=[VisualClip(**clip) for clip in refined_clips]
         )
 
         # Validate narration has reasonable word count
@@ -1031,16 +1100,18 @@ CLIPS RULES:
 - Spread clips evenly across the script content
 - Vary the visuals: alternate between wide shots, close-ups, different angles
 
-KEYWORD REQUIREMENTS (CRITICAL):
+KEYWORD REQUIREMENTS (CRITICAL - follow exactly):
 1. Keywords MUST be concrete, physical NOUNS that can be filmed
-2. Test each keyword: "Can I film a video of just this keyword?" If no, it's BAD
-3. NEVER use abstract concepts: "process", "energy", "system", "importance"
-4. NEVER use scientific terms: "enzymes", "photosynthesis", "molecules"
+2. Test each keyword: "Can I find this on a stock video site?" If no, replace it
+3. NEVER use abstract concepts: "process", "energy", "system", "importance", "concept", "method", "approach", "technique", "factor", "aspect", "element", "principle", "transformation"
+4. NEVER use scientific terms as keywords: "enzymes", "photosynthesis", "molecules"
 5. Use words a photographer would use to label footage
+6. Use "noun + modifier" pairs: "coffee shop" not "coffee", "woman typing laptop" not "laptop"
 
 EXAMPLES:
-- Good: ["ocean", "waves", "beach", "sunset"]
-- Good: ["kitchen", "chef", "cooking", "pan"]
+- Good: ["ocean waves", "sandy beach", "sunset sky"]
+- Good: ["kitchen counter", "chef cooking", "frying pan"]
+- Good: ["brain scan", "alarm clock", "pillow bed"]
 - Bad: ["importance", "health", "nutrients"] (too abstract)
 - Bad: ["process", "transformation", "system"] (not filmable)
 
@@ -1140,7 +1211,8 @@ IMPORTANT: Output ONLY valid JSON with "clips" array. Each clip needs "keywords"
                 content = match.group(1)
 
         data = json.loads(content)
-        clips = [VisualClip(**clip) for clip in data['clips']]
+        refined = self._refine_keywords(data['clips'])
+        clips = [VisualClip(**clip) for clip in refined]
 
         # Validate reasonable clip count
         if len(clips) < expected_clips * 0.5:

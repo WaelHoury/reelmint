@@ -80,6 +80,11 @@ class Settings(BaseSettings):
     clip_search_workers: int = 6
     clip_search_cache_ttl: int = 21600  # 6 hours
 
+    # === Video Search (Pixabay) ===
+    pixabay_api_key: str = ""
+    enable_pixabay: bool = False
+    enable_image_fallback: bool = False
+
     # === CLIP Matching ===
     clip_model: str = "ViT-B-32"
     clip_pretrained: str = "laion2b_s34b_b79k"
